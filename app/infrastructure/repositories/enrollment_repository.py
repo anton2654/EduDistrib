@@ -1,0 +1,366 @@
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.application.dto.enrollment_dto import (
+    CityCreateDTO,
+    DisciplineCreateDTO,
+    StudentCreateDTO,
+    TeacherSlotUpdateDTO,
+    TeacherCreateDTO,
+    TeacherSlotCreateDTO,
+)
+from app.application.interfaces.enrollment_repository import (
+    AvailableSlotProjection,
+    BookingProjection,
+    EnrollmentRepositoryInterface,
+    TeacherSlotProjection,
+)
+from app.domain.entities.booking import Booking
+from app.domain.entities.city import City
+from app.domain.entities.discipline import Discipline
+from app.domain.entities.student import Student
+from app.domain.entities.teacher import Teacher
+from app.domain.entities.teacher_discipline import TeacherDiscipline
+from app.domain.entities.teacher_slot import TeacherSlot
+
+
+class EnrollmentRepository(EnrollmentRepositoryInterface):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create_city(self, city_in: CityCreateDTO) -> City:
+        city = City(name=city_in.name)
+        self._session.add(city)
+        await self._session.commit()
+        await self._session.refresh(city)
+        return city
+
+    async def list_cities(self) -> list[City]:
+        stmt = select(City).order_by(City.name, City.id)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_city_by_id(self, city_id: int) -> City | None:
+        return await self._session.get(City, city_id)
+
+    async def create_discipline(self, discipline_in: DisciplineCreateDTO) -> Discipline:
+        discipline = Discipline(name=discipline_in.name)
+        self._session.add(discipline)
+        await self._session.commit()
+        await self._session.refresh(discipline)
+        return discipline
+
+    async def list_disciplines(self) -> list[Discipline]:
+        stmt = select(Discipline).order_by(Discipline.name, Discipline.id)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_discipline_by_id(self, discipline_id: int) -> Discipline | None:
+        return await self._session.get(Discipline, discipline_id)
+
+    async def create_teacher(self, teacher_in: TeacherCreateDTO) -> Teacher:
+        unique_discipline_ids = list(dict.fromkeys(teacher_in.discipline_ids))
+
+        teacher = Teacher(
+            full_name=teacher_in.full_name,
+            city_id=teacher_in.city_id,
+            discipline_links=[
+                TeacherDiscipline(discipline_id=discipline_id)
+                for discipline_id in unique_discipline_ids
+            ],
+        )
+        self._session.add(teacher)
+        await self._session.commit()
+        await self._session.refresh(teacher)
+        return teacher
+
+    async def list_teachers(
+        self,
+        city_id: int | None = None,
+        discipline_id: int | None = None,
+    ) -> list[Teacher]:
+        stmt = (
+            select(Teacher)
+            .options(selectinload(Teacher.discipline_links))
+            .order_by(Teacher.full_name, Teacher.id)
+        )
+
+        if city_id is not None:
+            stmt = stmt.where(Teacher.city_id == city_id)
+
+        if discipline_id is not None:
+            stmt = stmt.join(TeacherDiscipline).where(
+                TeacherDiscipline.discipline_id == discipline_id,
+            )
+
+        result = await self._session.execute(stmt)
+        return list(result.unique().scalars().all())
+
+    async def get_teacher_by_id(self, teacher_id: int) -> Teacher | None:
+        stmt = (
+            select(Teacher)
+            .where(Teacher.id == teacher_id)
+            .options(selectinload(Teacher.discipline_links))
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def teacher_has_discipline(self, teacher_id: int, discipline_id: int) -> bool:
+        stmt = select(TeacherDiscipline).where(
+            TeacherDiscipline.teacher_id == teacher_id,
+            TeacherDiscipline.discipline_id == discipline_id,
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
+    async def create_student(self, student_in: StudentCreateDTO) -> Student:
+        student = Student(
+            full_name=student_in.full_name,
+            email=student_in.email,
+            city_id=student_in.city_id,
+        )
+        self._session.add(student)
+        await self._session.commit()
+        await self._session.refresh(student)
+        return student
+
+    async def list_students(
+        self,
+        city_id: int | None = None,
+        email: str | None = None,
+    ) -> list[Student]:
+        stmt = select(Student).order_by(Student.full_name, Student.id)
+
+        if city_id is not None:
+            stmt = stmt.where(Student.city_id == city_id)
+
+        if email is not None:
+            stmt = stmt.where(Student.email == email)
+
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_student_by_id(self, student_id: int) -> Student | None:
+        return await self._session.get(Student, student_id)
+
+    async def create_slot(self, slot_in: TeacherSlotCreateDTO) -> TeacherSlot:
+        slot = TeacherSlot(**slot_in.model_dump())
+        self._session.add(slot)
+        await self._session.commit()
+        await self._session.refresh(slot)
+        return slot
+
+    async def get_slot_by_id(self, slot_id: int) -> TeacherSlot | None:
+        return await self._session.get(TeacherSlot, slot_id)
+
+    async def list_teacher_slots(self, teacher_id: int) -> list[TeacherSlotProjection]:
+        reserved_seats = func.count(Booking.id)
+
+        stmt = (
+            select(
+                TeacherSlot.id.label("slot_id"),
+                TeacherSlot.teacher_id,
+                TeacherSlot.discipline_id,
+                Discipline.name.label("discipline_name"),
+                TeacherSlot.starts_at,
+                TeacherSlot.ends_at,
+                TeacherSlot.capacity,
+                reserved_seats.label("reserved_seats"),
+                TeacherSlot.is_active,
+                TeacherSlot.created_at,
+            )
+            .join(Discipline, Discipline.id == TeacherSlot.discipline_id)
+            .outerjoin(Booking, Booking.slot_id == TeacherSlot.id)
+            .where(TeacherSlot.teacher_id == teacher_id)
+            .group_by(
+                TeacherSlot.id,
+                TeacherSlot.teacher_id,
+                TeacherSlot.discipline_id,
+                Discipline.name,
+                TeacherSlot.starts_at,
+                TeacherSlot.ends_at,
+                TeacherSlot.capacity,
+                TeacherSlot.is_active,
+                TeacherSlot.created_at,
+            )
+            .order_by(TeacherSlot.starts_at, TeacherSlot.id)
+        )
+
+        rows = (await self._session.execute(stmt)).mappings().all()
+        return [
+            TeacherSlotProjection(
+                slot_id=row["slot_id"],
+                teacher_id=row["teacher_id"],
+                discipline_id=row["discipline_id"],
+                discipline_name=row["discipline_name"],
+                starts_at=row["starts_at"],
+                ends_at=row["ends_at"],
+                capacity=row["capacity"],
+                reserved_seats=int(row["reserved_seats"] or 0),
+                is_active=row["is_active"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    async def update_slot(self, slot: TeacherSlot, slot_in: TeacherSlotUpdateDTO) -> TeacherSlot:
+        for field, value in slot_in.model_dump(exclude_unset=True).items():
+            setattr(slot, field, value)
+
+        await self._session.commit()
+        await self._session.refresh(slot)
+        return slot
+
+    async def delete_slot(self, slot: TeacherSlot) -> None:
+        await self._session.delete(slot)
+        await self._session.commit()
+
+    async def list_available_slots(
+        self,
+        city_id: int | None = None,
+        discipline_id: int | None = None,
+        teacher_id: int | None = None,
+    ) -> list[AvailableSlotProjection]:
+        reserved_seats = func.count(Booking.id)
+
+        stmt = (
+            select(
+                TeacherSlot.id.label("slot_id"),
+                Teacher.id.label("teacher_id"),
+                Teacher.full_name.label("teacher_name"),
+                City.id.label("city_id"),
+                City.name.label("city_name"),
+                Discipline.id.label("discipline_id"),
+                Discipline.name.label("discipline_name"),
+                TeacherSlot.starts_at,
+                TeacherSlot.ends_at,
+                TeacherSlot.capacity,
+                reserved_seats.label("reserved_seats"),
+            )
+            .join(Teacher, Teacher.id == TeacherSlot.teacher_id)
+            .join(City, City.id == Teacher.city_id)
+            .join(Discipline, Discipline.id == TeacherSlot.discipline_id)
+            .outerjoin(Booking, Booking.slot_id == TeacherSlot.id)
+            .where(TeacherSlot.is_active.is_(True))
+            .group_by(
+                TeacherSlot.id,
+                Teacher.id,
+                Teacher.full_name,
+                City.id,
+                City.name,
+                Discipline.id,
+                Discipline.name,
+                TeacherSlot.starts_at,
+                TeacherSlot.ends_at,
+                TeacherSlot.capacity,
+            )
+            .having(reserved_seats < TeacherSlot.capacity)
+            .order_by(TeacherSlot.starts_at, TeacherSlot.id)
+        )
+
+        if city_id is not None:
+            stmt = stmt.where(City.id == city_id)
+
+        if discipline_id is not None:
+            stmt = stmt.where(Discipline.id == discipline_id)
+
+        if teacher_id is not None:
+            stmt = stmt.where(Teacher.id == teacher_id)
+
+        rows = (await self._session.execute(stmt)).mappings().all()
+
+        return [
+            AvailableSlotProjection(
+                slot_id=row["slot_id"],
+                teacher_id=row["teacher_id"],
+                teacher_name=row["teacher_name"],
+                city_id=row["city_id"],
+                city_name=row["city_name"],
+                discipline_id=row["discipline_id"],
+                discipline_name=row["discipline_name"],
+                starts_at=row["starts_at"],
+                ends_at=row["ends_at"],
+                capacity=row["capacity"],
+                reserved_seats=int(row["reserved_seats"] or 0),
+            )
+            for row in rows
+        ]
+
+    async def count_slot_bookings(self, slot_id: int) -> int:
+        stmt = select(func.count(Booking.id)).where(Booking.slot_id == slot_id)
+        result = await self._session.execute(stmt)
+        return int(result.scalar_one() or 0)
+
+    async def has_booking(self, student_id: int, slot_id: int) -> bool:
+        stmt = select(Booking.id).where(
+            Booking.student_id == student_id,
+            Booking.slot_id == slot_id,
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
+    async def create_booking(self, student_id: int, slot_id: int) -> Booking:
+        booking = Booking(student_id=student_id, slot_id=slot_id)
+        self._session.add(booking)
+        await self._session.commit()
+        await self._session.refresh(booking)
+        return booking
+
+    async def list_bookings(self, student_id: int | None = None) -> list[BookingProjection]:
+        stmt = (
+            select(
+                Booking.id.label("booking_id"),
+                Student.id.label("student_id"),
+                Student.full_name.label("student_name"),
+                Student.email.label("student_email"),
+                TeacherSlot.id.label("slot_id"),
+                Teacher.id.label("teacher_id"),
+                Teacher.full_name.label("teacher_name"),
+                City.id.label("city_id"),
+                City.name.label("city_name"),
+                Discipline.id.label("discipline_id"),
+                Discipline.name.label("discipline_name"),
+                TeacherSlot.starts_at,
+                TeacherSlot.ends_at,
+                Booking.created_at,
+            )
+            .join(Student, Student.id == Booking.student_id)
+            .join(TeacherSlot, TeacherSlot.id == Booking.slot_id)
+            .join(Teacher, Teacher.id == TeacherSlot.teacher_id)
+            .join(City, City.id == Teacher.city_id)
+            .join(Discipline, Discipline.id == TeacherSlot.discipline_id)
+            .order_by(TeacherSlot.starts_at, Booking.id)
+        )
+
+        if student_id is not None:
+            stmt = stmt.where(Student.id == student_id)
+
+        rows = (await self._session.execute(stmt)).mappings().all()
+
+        return [
+            BookingProjection(
+                booking_id=row["booking_id"],
+                student_id=row["student_id"],
+                student_name=row["student_name"],
+                student_email=row["student_email"],
+                slot_id=row["slot_id"],
+                teacher_id=row["teacher_id"],
+                teacher_name=row["teacher_name"],
+                city_id=row["city_id"],
+                city_name=row["city_name"],
+                discipline_id=row["discipline_id"],
+                discipline_name=row["discipline_name"],
+                starts_at=row["starts_at"],
+                ends_at=row["ends_at"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    async def get_booking_by_id(self, booking_id: int) -> Booking | None:
+        return await self._session.get(Booking, booking_id)
+
+    async def delete_booking(self, booking: Booking) -> None:
+        await self._session.delete(booking)
+        await self._session.commit()
