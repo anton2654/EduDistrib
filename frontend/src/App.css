@@ -180,6 +180,54 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.admin-analytics-filters {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.analytics-kpi-grid {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.analytics-kpi-card {
+  border: 1px solid #cce0ef;
+  border-radius: 12px;
+  padding: 10px;
+  background: linear-gradient(180deg, #ffffff, #eef7ff);
+}
+
+.analytics-kpi-label {
+  margin: 0;
+  color: #3b6079;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.analytics-kpi-value {
+  margin: 6px 0 0;
+  color: #12354f;
+  font-size: 1.15rem;
+  font-weight: 800;
+}
+
+.analytics-list {
+  display: grid;
+  gap: 8px;
+}
+
+.analytics-item {
+  border: 1px solid #d2e1ee;
+  border-radius: 12px;
+  padding: 10px;
+  background: linear-gradient(180deg, #ffffff, #f6fbff);
+}
+
+.analytics-item p {
+  margin: 0;
+}
+
 label {
   display: grid;
   gap: 6px;
@@ -363,6 +411,11 @@ h3 {
     align-items: flex-start;
     flex-direction: column;
   }
+
+  .admin-analytics-filters,
+  .analytics-kpi-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .top-nav {
@@ -441,6 +494,14 @@ button.danger:hover {
 @media (max-width: 1120px) {
   .auth-grid {
     grid-template-columns: 1fr;
+  }
+
+  .admin-analytics-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

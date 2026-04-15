@@ -8,12 +8,15 @@ import {
   createTeacherSlot,
   deleteTeacherSlot,
   getCurrentAccount,
+  getOverviewAnalytics,
   getAccessToken,
   listAccounts,
   listAvailableSlots,
   listBookings,
   listCities,
+  listDisciplineAnalytics,
   listDisciplines,
+  listTeacherAnalytics,
   listTeacherSlots,
   listTeachers,
   login,
@@ -68,6 +71,14 @@ const EMPTY_TEACHER_ACCOUNT = {
   teacherId: "",
 };
 
+const EMPTY_ADMIN_ANALYTICS_FILTERS = {
+  cityId: "",
+  disciplineId: "",
+  teacherId: "",
+  startsFrom: "",
+  endsTo: "",
+};
+
 function App() {
   const [cities, setCities] = useState([]);
   const [disciplines, setDisciplines] = useState([]);
@@ -87,6 +98,12 @@ function App() {
   const [teacherAccountForm, setTeacherAccountForm] = useState(
     EMPTY_TEACHER_ACCOUNT,
   );
+  const [adminAnalyticsFilters, setAdminAnalyticsFilters] = useState(
+    EMPTY_ADMIN_ANALYTICS_FILTERS,
+  );
+  const [overviewAnalytics, setOverviewAnalytics] = useState(null);
+  const [teacherAnalyticsRows, setTeacherAnalyticsRows] = useState([]);
+  const [disciplineAnalyticsRows, setDisciplineAnalyticsRows] = useState([]);
 
   const [currentAccount, setCurrentAccount] = useState(null);
 
@@ -107,6 +124,7 @@ function App() {
     useState(null);
   const [slotActionInProgressId, setSlotActionInProgressId] = useState(null);
   const [isAdminAccountsLoading, setIsAdminAccountsLoading] = useState(false);
+  const [isAdminAnalyticsLoading, setIsAdminAnalyticsLoading] = useState(false);
 
   const [notice, setNotice] = useState({ kind: "info", text: "" });
 
@@ -149,8 +167,14 @@ function App() {
 
     return [
       { label: "Акаунти", value: accounts.length },
-      { label: "Викладачі", value: teacherDirectory.length },
-      { label: "Міста", value: cities.length },
+      {
+        label: "Слоти у вибірці",
+        value: overviewAnalytics?.filtered_slots_total ?? 0,
+      },
+      {
+        label: "Завантаження, %",
+        value: overviewAnalytics?.utilization_rate_percent ?? 0,
+      },
     ];
   }, [
     accounts.length,
@@ -162,6 +186,7 @@ function App() {
     teacherDirectory.length,
     teacherSlots,
     teachers.length,
+    overviewAnalytics,
   ]);
 
   useEffect(() => {
@@ -373,6 +398,59 @@ function App() {
     void loadAccounts();
   }, [role]);
 
+  useEffect(() => {
+    if (role !== "admin") {
+      setOverviewAnalytics(null);
+      setTeacherAnalyticsRows([]);
+      setDisciplineAnalyticsRows([]);
+      return;
+    }
+
+    async function loadAdminAnalytics() {
+      setIsAdminAnalyticsLoading(true);
+
+      const analyticsQuery = {
+        cityId: adminAnalyticsFilters.cityId || undefined,
+        disciplineId: adminAnalyticsFilters.disciplineId || undefined,
+        teacherId: adminAnalyticsFilters.teacherId || undefined,
+        startsFrom: adminAnalyticsFilters.startsFrom
+          ? toIsoFromLocalInput(adminAnalyticsFilters.startsFrom)
+          : undefined,
+        endsTo: adminAnalyticsFilters.endsTo
+          ? toIsoFromLocalInput(adminAnalyticsFilters.endsTo)
+          : undefined,
+      };
+
+      try {
+        const [overview, teacherRows, disciplineRows] = await Promise.all([
+          getOverviewAnalytics(analyticsQuery),
+          listTeacherAnalytics(analyticsQuery),
+          listDisciplineAnalytics(analyticsQuery),
+        ]);
+
+        setOverviewAnalytics(overview);
+        setTeacherAnalyticsRows(teacherRows);
+        setDisciplineAnalyticsRows(disciplineRows);
+      } catch (error) {
+        setNotice({
+          kind: "error",
+          text: `Не вдалося завантажити admin-аналітику: ${error.message}`,
+        });
+      } finally {
+        setIsAdminAnalyticsLoading(false);
+      }
+    }
+
+    void loadAdminAnalytics();
+  }, [
+    adminAnalyticsFilters.cityId,
+    adminAnalyticsFilters.disciplineId,
+    adminAnalyticsFilters.endsTo,
+    adminAnalyticsFilters.startsFrom,
+    adminAnalyticsFilters.teacherId,
+    role,
+  ]);
+
   function setSessionFromTokenPayload(payload) {
     localStorage.setItem(TOKEN_STORAGE_KEY, payload.access_token);
     setAccessToken(payload.access_token);
@@ -397,6 +475,10 @@ function App() {
     setCurrentAccount(null);
     setBookings([]);
     setTeacherSlots([]);
+    setAdminAnalyticsFilters(EMPTY_ADMIN_ANALYTICS_FILTERS);
+    setOverviewAnalytics(null);
+    setTeacherAnalyticsRows([]);
+    setDisciplineAnalyticsRows([]);
     setNotice({ kind: "info", text: "Сесію завершено." });
   }
 
@@ -444,6 +526,21 @@ function App() {
   function handleTeacherAccountChange(event) {
     const { name, value } = event.target;
     setTeacherAccountForm((previous) => ({ ...previous, [name]: value }));
+  }
+
+  function handleAdminAnalyticsFilterChange(event) {
+    const { name, value } = event.target;
+    setAdminAnalyticsFilters((previous) => {
+      if (name === "cityId" && previous.teacherId) {
+        return {
+          ...previous,
+          [name]: value,
+          teacherId: "",
+        };
+      }
+
+      return { ...previous, [name]: value };
+    });
   }
 
   async function handleLogin(event) {
@@ -726,6 +823,20 @@ function App() {
   }
 
   const authTokenPresent = Boolean(getAccessToken());
+  const adminOverview =
+    overviewAnalytics ??
+    {
+      total_cities: 0,
+      total_disciplines: 0,
+      total_teachers: 0,
+      total_students: 0,
+      filtered_slots_total: 0,
+      filtered_slots_active: 0,
+      filtered_bookings_total: 0,
+      filtered_capacity_total: 0,
+      filtered_reserved_seats_total: 0,
+      utilization_rate_percent: 0,
+    };
 
   return (
     <div className="page-shell">
@@ -1323,81 +1434,246 @@ function App() {
       ) : null}
 
       {currentAccount?.role === "admin" ? (
-        <section className="two-column">
-          <article className="panel reveal" style={{ animationDelay: "220ms" }}>
-            <h2>Створення Teacher Account</h2>
-            <form
-              className="profile-form"
-              onSubmit={handleCreateTeacherAccount}
-            >
-              <label>
-                Username
-                <input
-                  name="username"
-                  value={teacherAccountForm.username}
-                  onChange={handleTeacherAccountChange}
-                  placeholder="teacher_new"
-                />
-              </label>
+        <>
+          <section className="panel reveal" style={{ animationDelay: "200ms" }}>
+            <div className="panel-header-row">
+              <h2>Admin аналітика</h2>
+              <span className="badge">
+                {isAdminAnalyticsLoading ? "Оновлення..." : "Актуально"}
+              </span>
+            </div>
 
+            <div className="filters-grid admin-analytics-filters">
               <label>
-                Password
-                <input
-                  name="password"
-                  type="password"
-                  value={teacherAccountForm.password}
-                  onChange={handleTeacherAccountChange}
-                  placeholder="Не менше 6 символів"
-                />
-              </label>
-
-              <label>
-                Teacher profile
+                Місто
                 <select
-                  name="teacherId"
-                  value={teacherAccountForm.teacherId}
-                  onChange={handleTeacherAccountChange}
+                  name="cityId"
+                  value={adminAnalyticsFilters.cityId}
+                  onChange={handleAdminAnalyticsFilterChange}
                 >
-                  <option value="">Оберіть викладача</option>
-                  {teacherDirectory.map((teacher) => (
-                    <option key={teacher.id} value={teacher.id}>
-                      {teacher.full_name}
+                  <option value="">Усі міста</option>
+                  {cities.map((city) => (
+                    <option key={city.id} value={city.id}>
+                      {city.name}
                     </option>
                   ))}
                 </select>
               </label>
 
-              <button type="submit" disabled={isAdminAccountsLoading}>
-                Створити teacher account
-              </button>
-            </form>
-          </article>
+              <label>
+                Дисципліна
+                <select
+                  name="disciplineId"
+                  value={adminAnalyticsFilters.disciplineId}
+                  onChange={handleAdminAnalyticsFilterChange}
+                >
+                  <option value="">Усі дисципліни</option>
+                  {disciplines.map((discipline) => (
+                    <option key={discipline.id} value={discipline.id}>
+                      {discipline.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-          <article className="panel reveal" style={{ animationDelay: "300ms" }}>
-            <div className="panel-header-row">
-              <h2>Усі акаунти</h2>
-              <span className="badge">
-                {isAdminAccountsLoading
-                  ? "Оновлення..."
-                  : `Кількість: ${accounts.length}`}
-              </span>
+              <label>
+                Викладач
+                <select
+                  name="teacherId"
+                  value={adminAnalyticsFilters.teacherId}
+                  onChange={handleAdminAnalyticsFilterChange}
+                >
+                  <option value="">Усі викладачі</option>
+                  {teacherDirectory
+                    .filter((teacher) => {
+                      if (!adminAnalyticsFilters.cityId) {
+                        return true;
+                      }
+                      return teacher.city_id === Number(adminAnalyticsFilters.cityId);
+                    })
+                    .map((teacher) => (
+                      <option key={teacher.id} value={teacher.id}>
+                        {teacher.full_name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+
+              <label>
+                Початок інтервалу
+                <input
+                  name="startsFrom"
+                  type="datetime-local"
+                  value={adminAnalyticsFilters.startsFrom}
+                  onChange={handleAdminAnalyticsFilterChange}
+                />
+              </label>
+
+              <label>
+                Кінець інтервалу
+                <input
+                  name="endsTo"
+                  type="datetime-local"
+                  value={adminAnalyticsFilters.endsTo}
+                  onChange={handleAdminAnalyticsFilterChange}
+                />
+              </label>
             </div>
 
-            <div className="account-list">
-              {accounts.map((account) => (
-                <div className="account-item" key={account.user_id}>
-                  <p>
-                    <strong>{account.username}</strong> · {account.role}
-                  </p>
-                  <p className="meta-line">
-                    student_id: {account.student_id ?? "-"}, teacher_id:{" "}
-                    {account.teacher_id ?? "-"}
-                  </p>
+            <div className="analytics-kpi-grid">
+              <article className="analytics-kpi-card">
+                <p className="analytics-kpi-label">Слоти / активні</p>
+                <p className="analytics-kpi-value">
+                  {adminOverview.filtered_slots_total} / {adminOverview.filtered_slots_active}
+                </p>
+              </article>
+              <article className="analytics-kpi-card">
+                <p className="analytics-kpi-label">Бронювання</p>
+                <p className="analytics-kpi-value">{adminOverview.filtered_bookings_total}</p>
+              </article>
+              <article className="analytics-kpi-card">
+                <p className="analytics-kpi-label">Місткість</p>
+                <p className="analytics-kpi-value">{adminOverview.filtered_capacity_total}</p>
+              </article>
+              <article className="analytics-kpi-card">
+                <p className="analytics-kpi-label">Зайняті місця</p>
+                <p className="analytics-kpi-value">
+                  {adminOverview.filtered_reserved_seats_total}
+                </p>
+              </article>
+              <article className="analytics-kpi-card">
+                <p className="analytics-kpi-label">Завантаження</p>
+                <p className="analytics-kpi-value">
+                  {adminOverview.utilization_rate_percent}%
+                </p>
+              </article>
+            </div>
+          </section>
+
+          <section className="two-column">
+            <article className="panel reveal" style={{ animationDelay: "240ms" }}>
+              <h2>Створення Teacher Account</h2>
+              <form
+                className="profile-form"
+                onSubmit={handleCreateTeacherAccount}
+              >
+                <label>
+                  Username
+                  <input
+                    name="username"
+                    value={teacherAccountForm.username}
+                    onChange={handleTeacherAccountChange}
+                    placeholder="teacher_new"
+                  />
+                </label>
+
+                <label>
+                  Password
+                  <input
+                    name="password"
+                    type="password"
+                    value={teacherAccountForm.password}
+                    onChange={handleTeacherAccountChange}
+                    placeholder="Не менше 6 символів"
+                  />
+                </label>
+
+                <label>
+                  Teacher profile
+                  <select
+                    name="teacherId"
+                    value={teacherAccountForm.teacherId}
+                    onChange={handleTeacherAccountChange}
+                  >
+                    <option value="">Оберіть викладача</option>
+                    {teacherDirectory.map((teacher) => (
+                      <option key={teacher.id} value={teacher.id}>
+                        {teacher.full_name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <button type="submit" disabled={isAdminAccountsLoading}>
+                  Створити teacher account
+                </button>
+              </form>
+            </article>
+
+            <article className="panel reveal" style={{ animationDelay: "300ms" }}>
+              <div className="panel-header-row">
+                <h2>Усі акаунти</h2>
+                <span className="badge">
+                  {isAdminAccountsLoading
+                    ? "Оновлення..."
+                    : `Кількість: ${accounts.length}`}
+                </span>
+              </div>
+
+              <div className="account-list">
+                {accounts.map((account) => (
+                  <div className="account-item" key={account.user_id}>
+                    <p>
+                      <strong>{account.username}</strong> · {account.role}
+                    </p>
+                    <p className="meta-line">
+                      student_id: {account.student_id ?? "-"}, teacher_id:{" "}
+                      {account.teacher_id ?? "-"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </article>
+          </section>
+
+          <section className="two-column">
+            <article className="panel reveal" style={{ animationDelay: "340ms" }}>
+              <h2>Топ викладачів</h2>
+              {teacherAnalyticsRows.length === 0 && !isAdminAnalyticsLoading ? (
+                <p className="empty-state">Немає даних за поточними фільтрами.</p>
+              ) : (
+                <div className="analytics-list">
+                  {teacherAnalyticsRows.slice(0, 8).map((row) => (
+                    <article key={row.teacher_id} className="analytics-item">
+                      <p>
+                        <strong>{row.teacher_name}</strong> · {row.city_name}
+                      </p>
+                      <p className="meta-line">
+                        Слоти: {row.slots_total} · Бронювання: {row.bookings_total}
+                      </p>
+                      <p className="meta-line">
+                        Завантаження: {row.utilization_rate_percent}%
+                      </p>
+                    </article>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </article>
-        </section>
+              )}
+            </article>
+
+            <article className="panel reveal" style={{ animationDelay: "400ms" }}>
+              <h2>Попит за дисциплінами</h2>
+              {disciplineAnalyticsRows.length === 0 && !isAdminAnalyticsLoading ? (
+                <p className="empty-state">Немає даних за поточними фільтрами.</p>
+              ) : (
+                <div className="analytics-list">
+                  {disciplineAnalyticsRows.slice(0, 8).map((row) => (
+                    <article key={row.discipline_id} className="analytics-item">
+                      <p>
+                        <strong>{row.discipline_name}</strong>
+                      </p>
+                      <p className="meta-line">
+                        Слоти: {row.slots_total} · Бронювання: {row.bookings_total}
+                      </p>
+                      <p className="meta-line">
+                        Завантаження: {row.utilization_rate_percent}%
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </article>
+          </section>
+        </>
       ) : null}
     </div>
   );

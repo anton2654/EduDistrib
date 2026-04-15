@@ -145,6 +145,59 @@ async def test_admin_can_access_admin_and_student_routes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_can_access_enrollment_analytics_routes() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        admin_token = await _ensure_admin_token(client)
+        if admin_token is None:
+            pytest.skip("Unable to authenticate admin with default bootstrap credentials.")
+
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+        overview_response = await client.get(
+            "/api/v1/enrollment/analytics/overview",
+            headers=admin_headers,
+        )
+        teachers_response = await client.get(
+            "/api/v1/enrollment/analytics/teachers",
+            headers=admin_headers,
+        )
+        disciplines_response = await client.get(
+            "/api/v1/enrollment/analytics/disciplines",
+            headers=admin_headers,
+        )
+
+    assert overview_response.status_code == 200
+    overview_payload = overview_response.json()
+    assert "filtered_slots_total" in overview_payload
+    assert "utilization_rate_percent" in overview_payload
+
+    assert teachers_response.status_code == 200
+    assert isinstance(teachers_response.json(), list)
+
+    assert disciplines_response.status_code == 200
+    assert isinstance(disciplines_response.json(), list)
+
+
+@pytest.mark.asyncio
+async def test_student_cannot_access_enrollment_analytics_routes() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        _, student_headers = await _register_student(client)
+
+        analytics_response = await client.get(
+            "/api/v1/enrollment/analytics/overview",
+            headers=student_headers,
+        )
+
+    assert analytics_response.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_student_cannot_spoof_student_id_on_booking_create() -> None:
     async with AsyncClient(
         transport=ASGITransport(app=app),

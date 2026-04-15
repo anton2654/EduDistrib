@@ -7,6 +7,7 @@ Roles in UI:
 - Student dashboard (discover slots, create/cancel bookings)
 - Teacher dashboard (manage own slots)
 - Admin panel (create teacher accounts)
+- Admin analytics (overview KPIs + teacher/discipline performance filters)
 
 ## Setup
 

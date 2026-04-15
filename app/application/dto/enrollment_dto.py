@@ -206,3 +206,40 @@ class BookingDetailsReadDTO(BaseModel):
     starts_at: datetime
     ends_at: datetime
     created_at: datetime
+
+
+class AnalyticsOverviewReadDTO(BaseModel):
+    total_cities: int
+    total_disciplines: int
+    total_teachers: int
+    total_students: int
+    filtered_slots_total: int
+    filtered_slots_active: int
+    filtered_bookings_total: int
+    filtered_capacity_total: int
+    filtered_reserved_seats_total: int
+    utilization_rate_percent: float = Field(ge=0, le=100)
+
+
+class TeacherAnalyticsReadDTO(BaseModel):
+    teacher_id: int
+    teacher_name: str
+    city_id: int
+    city_name: str
+    slots_total: int
+    slots_active: int
+    bookings_total: int
+    capacity_total: int
+    reserved_seats_total: int
+    utilization_rate_percent: float = Field(ge=0, le=100)
+
+
+class DisciplineAnalyticsReadDTO(BaseModel):
+    discipline_id: int
+    discipline_name: str
+    slots_total: int
+    slots_active: int
+    bookings_total: int
+    capacity_total: int
+    reserved_seats_total: int
+    utilization_rate_percent: float = Field(ge=0, le=100)

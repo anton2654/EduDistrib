@@ -121,6 +121,63 @@ export async function listAvailableSlots({
   );
 }
 
+export async function getOverviewAnalytics({
+  cityId,
+  disciplineId,
+  teacherId,
+  startsFrom,
+  endsTo,
+} = {}) {
+  return request(
+    ENROLLMENT_BASE_URL,
+    `/analytics/overview${toQuery({
+      city_id: cityId,
+      discipline_id: disciplineId,
+      teacher_id: teacherId,
+      starts_from: startsFrom,
+      ends_to: endsTo,
+    })}`,
+  );
+}
+
+export async function listTeacherAnalytics({
+  cityId,
+  disciplineId,
+  teacherId,
+  startsFrom,
+  endsTo,
+} = {}) {
+  return request(
+    ENROLLMENT_BASE_URL,
+    `/analytics/teachers${toQuery({
+      city_id: cityId,
+      discipline_id: disciplineId,
+      teacher_id: teacherId,
+      starts_from: startsFrom,
+      ends_to: endsTo,
+    })}`,
+  );
+}
+
+export async function listDisciplineAnalytics({
+  cityId,
+  disciplineId,
+  teacherId,
+  startsFrom,
+  endsTo,
+} = {}) {
+  return request(
+    ENROLLMENT_BASE_URL,
+    `/analytics/disciplines${toQuery({
+      city_id: cityId,
+      discipline_id: disciplineId,
+      teacher_id: teacherId,
+      starts_from: startsFrom,
+      ends_to: endsTo,
+    })}`,
+  );
+}
+
 export async function createBooking({ studentId, slotId }) {
   return request(ENROLLMENT_BASE_URL, "/bookings", {
     method: "POST",

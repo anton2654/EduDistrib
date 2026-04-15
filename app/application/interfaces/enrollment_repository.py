@@ -65,6 +65,46 @@ class TeacherSlotProjection:
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class AnalyticsOverviewProjection:
+    total_cities: int
+    total_disciplines: int
+    total_teachers: int
+    total_students: int
+    filtered_slots_total: int
+    filtered_slots_active: int
+    filtered_bookings_total: int
+    filtered_capacity_total: int
+    filtered_reserved_seats_total: int
+    utilization_rate_percent: float
+
+
+@dataclass(frozen=True)
+class TeacherAnalyticsProjection:
+    teacher_id: int
+    teacher_name: str
+    city_id: int
+    city_name: str
+    slots_total: int
+    slots_active: int
+    bookings_total: int
+    capacity_total: int
+    reserved_seats_total: int
+    utilization_rate_percent: float
+
+
+@dataclass(frozen=True)
+class DisciplineAnalyticsProjection:
+    discipline_id: int
+    discipline_name: str
+    slots_total: int
+    slots_active: int
+    bookings_total: int
+    capacity_total: int
+    reserved_seats_total: int
+    utilization_rate_percent: float
+
+
 class EnrollmentRepositoryInterface(ABC):
     @abstractmethod
     async def create_city(self, city_in: CityCreateDTO) -> City:
@@ -153,6 +193,39 @@ class EnrollmentRepositoryInterface(ABC):
         discipline_id: int | None = None,
         teacher_id: int | None = None,
     ) -> list[AvailableSlotProjection]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_overview_analytics(
+        self,
+        city_id: int | None = None,
+        discipline_id: int | None = None,
+        teacher_id: int | None = None,
+        starts_from: datetime | None = None,
+        ends_to: datetime | None = None,
+    ) -> AnalyticsOverviewProjection:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_teacher_analytics(
+        self,
+        city_id: int | None = None,
+        discipline_id: int | None = None,
+        teacher_id: int | None = None,
+        starts_from: datetime | None = None,
+        ends_to: datetime | None = None,
+    ) -> list[TeacherAnalyticsProjection]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_discipline_analytics(
+        self,
+        city_id: int | None = None,
+        discipline_id: int | None = None,
+        teacher_id: int | None = None,
+        starts_from: datetime | None = None,
+        ends_to: datetime | None = None,
+    ) -> list[DisciplineAnalyticsProjection]:
         raise NotImplementedError
 
     @abstractmethod

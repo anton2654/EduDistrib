@@ -1,25 +1,36 @@
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.application.dto.enrollment_dto import (
+    AnalyticsOverviewReadDTO,
     AvailableSlotReadDTO,
     BookingCreateDTO,
     BookingDetailsReadDTO,
     BookingReadDTO,
     CityCreateDTO,
     CityReadDTO,
+    DisciplineAnalyticsReadDTO,
     DisciplineCreateDTO,
     DisciplineReadDTO,
     StudentCreateDTO,
     StudentReadDTO,
+    TeacherAnalyticsReadDTO,
     TeacherCreateDTO,
     TeacherReadDTO,
     TeacherSlotCreateDTO,
     TeacherSlotReadDTO,
 )
-from app.application.interfaces.enrollment_repository import AvailableSlotProjection, BookingProjection
+from app.application.interfaces.enrollment_repository import (
+    AnalyticsOverviewProjection,
+    AvailableSlotProjection,
+    BookingProjection,
+    DisciplineAnalyticsProjection,
+    TeacherAnalyticsProjection,
+)
 from app.application.services.enrollment_service import (
+    AnalyticsFilterRangeError,
     BookingOwnershipError,
     BookingNotFoundError,
     CityNotFoundError,
@@ -88,6 +99,49 @@ def _booking_to_dto(booking: BookingProjection) -> BookingDetailsReadDTO:
         starts_at=booking.starts_at,
         ends_at=booking.ends_at,
         created_at=booking.created_at,
+    )
+
+
+def _overview_to_dto(overview: AnalyticsOverviewProjection) -> AnalyticsOverviewReadDTO:
+    return AnalyticsOverviewReadDTO(
+        total_cities=overview.total_cities,
+        total_disciplines=overview.total_disciplines,
+        total_teachers=overview.total_teachers,
+        total_students=overview.total_students,
+        filtered_slots_total=overview.filtered_slots_total,
+        filtered_slots_active=overview.filtered_slots_active,
+        filtered_bookings_total=overview.filtered_bookings_total,
+        filtered_capacity_total=overview.filtered_capacity_total,
+        filtered_reserved_seats_total=overview.filtered_reserved_seats_total,
+        utilization_rate_percent=overview.utilization_rate_percent,
+    )
+
+
+def _teacher_analytics_to_dto(item: TeacherAnalyticsProjection) -> TeacherAnalyticsReadDTO:
+    return TeacherAnalyticsReadDTO(
+        teacher_id=item.teacher_id,
+        teacher_name=item.teacher_name,
+        city_id=item.city_id,
+        city_name=item.city_name,
+        slots_total=item.slots_total,
+        slots_active=item.slots_active,
+        bookings_total=item.bookings_total,
+        capacity_total=item.capacity_total,
+        reserved_seats_total=item.reserved_seats_total,
+        utilization_rate_percent=item.utilization_rate_percent,
+    )
+
+
+def _discipline_analytics_to_dto(item: DisciplineAnalyticsProjection) -> DisciplineAnalyticsReadDTO:
+    return DisciplineAnalyticsReadDTO(
+        discipline_id=item.discipline_id,
+        discipline_name=item.discipline_name,
+        slots_total=item.slots_total,
+        slots_active=item.slots_active,
+        bookings_total=item.bookings_total,
+        capacity_total=item.capacity_total,
+        reserved_seats_total=item.reserved_seats_total,
+        utilization_rate_percent=item.utilization_rate_percent,
     )
 
 
@@ -213,6 +267,84 @@ async def list_available_slots(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
     return [_available_slot_to_dto(slot) for slot in slots]
+
+
+@router.get("/analytics/overview", response_model=AnalyticsOverviewReadDTO)
+async def get_analytics_overview(
+    service: EnrollmentServiceDependency,
+    _: AdminUserDependency,
+    city_id: int | None = Query(default=None, gt=0),
+    discipline_id: int | None = Query(default=None, gt=0),
+    teacher_id: int | None = Query(default=None, gt=0),
+    starts_from: datetime | None = Query(default=None),
+    ends_to: datetime | None = Query(default=None),
+) -> AnalyticsOverviewReadDTO:
+    try:
+        overview = await service.get_overview_analytics(
+            city_id=city_id,
+            discipline_id=discipline_id,
+            teacher_id=teacher_id,
+            starts_from=starts_from,
+            ends_to=ends_to,
+        )
+    except (CityNotFoundError, DisciplineNotFoundError, TeacherNotFoundError) as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except AnalyticsFilterRangeError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    return _overview_to_dto(overview)
+
+
+@router.get("/analytics/teachers", response_model=list[TeacherAnalyticsReadDTO])
+async def list_teacher_analytics(
+    service: EnrollmentServiceDependency,
+    _: AdminUserDependency,
+    city_id: int | None = Query(default=None, gt=0),
+    discipline_id: int | None = Query(default=None, gt=0),
+    teacher_id: int | None = Query(default=None, gt=0),
+    starts_from: datetime | None = Query(default=None),
+    ends_to: datetime | None = Query(default=None),
+) -> list[TeacherAnalyticsReadDTO]:
+    try:
+        rows = await service.list_teacher_analytics(
+            city_id=city_id,
+            discipline_id=discipline_id,
+            teacher_id=teacher_id,
+            starts_from=starts_from,
+            ends_to=ends_to,
+        )
+    except (CityNotFoundError, DisciplineNotFoundError, TeacherNotFoundError) as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except AnalyticsFilterRangeError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    return [_teacher_analytics_to_dto(item) for item in rows]
+
+
+@router.get("/analytics/disciplines", response_model=list[DisciplineAnalyticsReadDTO])
+async def list_discipline_analytics(
+    service: EnrollmentServiceDependency,
+    _: AdminUserDependency,
+    city_id: int | None = Query(default=None, gt=0),
+    discipline_id: int | None = Query(default=None, gt=0),
+    teacher_id: int | None = Query(default=None, gt=0),
+    starts_from: datetime | None = Query(default=None),
+    ends_to: datetime | None = Query(default=None),
+) -> list[DisciplineAnalyticsReadDTO]:
+    try:
+        rows = await service.list_discipline_analytics(
+            city_id=city_id,
+            discipline_id=discipline_id,
+            teacher_id=teacher_id,
+            starts_from=starts_from,
+            ends_to=ends_to,
+        )
+    except (CityNotFoundError, DisciplineNotFoundError, TeacherNotFoundError) as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except AnalyticsFilterRangeError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    return [_discipline_analytics_to_dto(item) for item in rows]
 
 
 @router.post("/bookings", response_model=BookingReadDTO, status_code=status.HTTP_201_CREATED)

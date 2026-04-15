@@ -49,6 +49,7 @@ Current integration coverage includes:
 
 - booking lifecycle (create, list, cancel)
 - role authorization matrix (Student/Teacher/Admin route access)
+- admin analytics endpoint access
 
 ## Main Endpoints
 
@@ -80,6 +81,14 @@ Base prefix: `/api/v1/enrollment`
 - `POST /bookings` - book slot (student/admin; student is limited to own profile)
 - `GET /bookings?student_id=` - list bookings (student/admin; student sees only own)
 - `DELETE /bookings/{booking_id}` - cancel booking (student/admin; student can cancel only own)
+
+### Admin Analytics
+
+Base prefix: `/api/v1/enrollment/analytics` (admin role)
+
+- `GET /overview?city_id=&discipline_id=&teacher_id=&starts_from=&ends_to=` - platform KPIs and utilization
+- `GET /teachers?city_id=&discipline_id=&teacher_id=&starts_from=&ends_to=` - teacher performance slice
+- `GET /disciplines?city_id=&discipline_id=&teacher_id=&starts_from=&ends_to=` - discipline demand slice
 
 ### Teacher Slot Management
 
@@ -127,6 +136,7 @@ The frontend now supports:
 - student booking dashboard
 - teacher slot management screen (create, update, activate/deactivate, delete)
 - admin panel for teacher-account provisioning
+- admin analytics dashboard (KPI cards + teacher/discipline rankings with filters)
 
 ## Docker Compose (One Command)
 

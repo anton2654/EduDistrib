@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy.exc import IntegrityError
 
 from app.application.dto.enrollment_dto import (
@@ -11,9 +13,12 @@ from app.application.dto.enrollment_dto import (
     TeacherSlotCreateDTO,
 )
 from app.application.interfaces.enrollment_repository import (
+    AnalyticsOverviewProjection,
     AvailableSlotProjection,
     BookingProjection,
+    DisciplineAnalyticsProjection,
     EnrollmentRepositoryInterface,
+    TeacherAnalyticsProjection,
     TeacherSlotProjection,
 )
 from app.domain.entities.booking import Booking
@@ -93,6 +98,11 @@ class TeacherSlotAccessError(EnrollmentError):
 class SlotTimeRangeError(EnrollmentError):
     def __init__(self) -> None:
         super().__init__("Slot ends_at must be later than starts_at.")
+
+
+class AnalyticsFilterRangeError(EnrollmentError):
+    def __init__(self) -> None:
+        super().__init__("Analytics filter ends_to must be later than starts_from.")
 
 
 class EnrollmentService:
@@ -292,6 +302,75 @@ class EnrollmentService:
             teacher_id=teacher_id,
         )
 
+    async def get_overview_analytics(
+        self,
+        city_id: int | None = None,
+        discipline_id: int | None = None,
+        teacher_id: int | None = None,
+        starts_from: datetime | None = None,
+        ends_to: datetime | None = None,
+    ) -> AnalyticsOverviewProjection:
+        await self._validate_analytics_filters(
+            city_id=city_id,
+            discipline_id=discipline_id,
+            teacher_id=teacher_id,
+            starts_from=starts_from,
+            ends_to=ends_to,
+        )
+        return await self._repository.get_overview_analytics(
+            city_id=city_id,
+            discipline_id=discipline_id,
+            teacher_id=teacher_id,
+            starts_from=starts_from,
+            ends_to=ends_to,
+        )
+
+    async def list_teacher_analytics(
+        self,
+        city_id: int | None = None,
+        discipline_id: int | None = None,
+        teacher_id: int | None = None,
+        starts_from: datetime | None = None,
+        ends_to: datetime | None = None,
+    ) -> list[TeacherAnalyticsProjection]:
+        await self._validate_analytics_filters(
+            city_id=city_id,
+            discipline_id=discipline_id,
+            teacher_id=teacher_id,
+            starts_from=starts_from,
+            ends_to=ends_to,
+        )
+        return await self._repository.list_teacher_analytics(
+            city_id=city_id,
+            discipline_id=discipline_id,
+            teacher_id=teacher_id,
+            starts_from=starts_from,
+            ends_to=ends_to,
+        )
+
+    async def list_discipline_analytics(
+        self,
+        city_id: int | None = None,
+        discipline_id: int | None = None,
+        teacher_id: int | None = None,
+        starts_from: datetime | None = None,
+        ends_to: datetime | None = None,
+    ) -> list[DisciplineAnalyticsProjection]:
+        await self._validate_analytics_filters(
+            city_id=city_id,
+            discipline_id=discipline_id,
+            teacher_id=teacher_id,
+            starts_from=starts_from,
+            ends_to=ends_to,
+        )
+        return await self._repository.list_discipline_analytics(
+            city_id=city_id,
+            discipline_id=discipline_id,
+            teacher_id=teacher_id,
+            starts_from=starts_from,
+            ends_to=ends_to,
+        )
+
     async def create_booking(self, booking_in: BookingCreateDTO) -> Booking:
         student = await self._repository.get_student_by_id(booking_in.student_id)
         if student is None:
@@ -341,3 +420,30 @@ class EnrollmentService:
             raise BookingOwnershipError(booking_id)
 
         await self._repository.delete_booking(booking)
+
+    async def _validate_analytics_filters(
+        self,
+        *,
+        city_id: int | None,
+        discipline_id: int | None,
+        teacher_id: int | None,
+        starts_from: datetime | None,
+        ends_to: datetime | None,
+    ) -> None:
+        if city_id is not None:
+            city = await self._repository.get_city_by_id(city_id)
+            if city is None:
+                raise CityNotFoundError(city_id)
+
+        if discipline_id is not None:
+            discipline = await self._repository.get_discipline_by_id(discipline_id)
+            if discipline is None:
+                raise DisciplineNotFoundError(discipline_id)
+
+        if teacher_id is not None:
+            teacher = await self._repository.get_teacher_by_id(teacher_id)
+            if teacher is None:
+                raise TeacherNotFoundError(teacher_id)
+
+        if starts_from is not None and ends_to is not None and ends_to <= starts_from:
+            raise AnalyticsFilterRangeError
