@@ -823,20 +823,18 @@ function App() {
   }
 
   const authTokenPresent = Boolean(getAccessToken());
-  const adminOverview =
-    overviewAnalytics ??
-    {
-      total_cities: 0,
-      total_disciplines: 0,
-      total_teachers: 0,
-      total_students: 0,
-      filtered_slots_total: 0,
-      filtered_slots_active: 0,
-      filtered_bookings_total: 0,
-      filtered_capacity_total: 0,
-      filtered_reserved_seats_total: 0,
-      utilization_rate_percent: 0,
-    };
+  const adminOverview = overviewAnalytics ?? {
+    total_cities: 0,
+    total_disciplines: 0,
+    total_teachers: 0,
+    total_students: 0,
+    filtered_slots_total: 0,
+    filtered_slots_active: 0,
+    filtered_bookings_total: 0,
+    filtered_capacity_total: 0,
+    filtered_reserved_seats_total: 0,
+    utilization_rate_percent: 0,
+  };
 
   return (
     <div className="page-shell">
@@ -1489,7 +1487,9 @@ function App() {
                       if (!adminAnalyticsFilters.cityId) {
                         return true;
                       }
-                      return teacher.city_id === Number(adminAnalyticsFilters.cityId);
+                      return (
+                        teacher.city_id === Number(adminAnalyticsFilters.cityId)
+                      );
                     })
                     .map((teacher) => (
                       <option key={teacher.id} value={teacher.id}>
@@ -1524,16 +1524,21 @@ function App() {
               <article className="analytics-kpi-card">
                 <p className="analytics-kpi-label">Слоти / активні</p>
                 <p className="analytics-kpi-value">
-                  {adminOverview.filtered_slots_total} / {adminOverview.filtered_slots_active}
+                  {adminOverview.filtered_slots_total} /{" "}
+                  {adminOverview.filtered_slots_active}
                 </p>
               </article>
               <article className="analytics-kpi-card">
                 <p className="analytics-kpi-label">Бронювання</p>
-                <p className="analytics-kpi-value">{adminOverview.filtered_bookings_total}</p>
+                <p className="analytics-kpi-value">
+                  {adminOverview.filtered_bookings_total}
+                </p>
               </article>
               <article className="analytics-kpi-card">
                 <p className="analytics-kpi-label">Місткість</p>
-                <p className="analytics-kpi-value">{adminOverview.filtered_capacity_total}</p>
+                <p className="analytics-kpi-value">
+                  {adminOverview.filtered_capacity_total}
+                </p>
               </article>
               <article className="analytics-kpi-card">
                 <p className="analytics-kpi-label">Зайняті місця</p>
@@ -1551,7 +1556,10 @@ function App() {
           </section>
 
           <section className="two-column">
-            <article className="panel reveal" style={{ animationDelay: "240ms" }}>
+            <article
+              className="panel reveal"
+              style={{ animationDelay: "240ms" }}
+            >
               <h2>Створення Teacher Account</h2>
               <form
                 className="profile-form"
@@ -1600,7 +1608,10 @@ function App() {
               </form>
             </article>
 
-            <article className="panel reveal" style={{ animationDelay: "300ms" }}>
+            <article
+              className="panel reveal"
+              style={{ animationDelay: "300ms" }}
+            >
               <div className="panel-header-row">
                 <h2>Усі акаунти</h2>
                 <span className="badge">
@@ -1627,10 +1638,15 @@ function App() {
           </section>
 
           <section className="two-column">
-            <article className="panel reveal" style={{ animationDelay: "340ms" }}>
+            <article
+              className="panel reveal"
+              style={{ animationDelay: "340ms" }}
+            >
               <h2>Топ викладачів</h2>
               {teacherAnalyticsRows.length === 0 && !isAdminAnalyticsLoading ? (
-                <p className="empty-state">Немає даних за поточними фільтрами.</p>
+                <p className="empty-state">
+                  Немає даних за поточними фільтрами.
+                </p>
               ) : (
                 <div className="analytics-list">
                   {teacherAnalyticsRows.slice(0, 8).map((row) => (
@@ -1639,7 +1655,8 @@ function App() {
                         <strong>{row.teacher_name}</strong> · {row.city_name}
                       </p>
                       <p className="meta-line">
-                        Слоти: {row.slots_total} · Бронювання: {row.bookings_total}
+                        Слоти: {row.slots_total} · Бронювання:{" "}
+                        {row.bookings_total}
                       </p>
                       <p className="meta-line">
                         Завантаження: {row.utilization_rate_percent}%
@@ -1650,10 +1667,16 @@ function App() {
               )}
             </article>
 
-            <article className="panel reveal" style={{ animationDelay: "400ms" }}>
+            <article
+              className="panel reveal"
+              style={{ animationDelay: "400ms" }}
+            >
               <h2>Попит за дисциплінами</h2>
-              {disciplineAnalyticsRows.length === 0 && !isAdminAnalyticsLoading ? (
-                <p className="empty-state">Немає даних за поточними фільтрами.</p>
+              {disciplineAnalyticsRows.length === 0 &&
+              !isAdminAnalyticsLoading ? (
+                <p className="empty-state">
+                  Немає даних за поточними фільтрами.
+                </p>
               ) : (
                 <div className="analytics-list">
                   {disciplineAnalyticsRows.slice(0, 8).map((row) => (
@@ -1662,7 +1685,8 @@ function App() {
                         <strong>{row.discipline_name}</strong>
                       </p>
                       <p className="meta-line">
-                        Слоти: {row.slots_total} · Бронювання: {row.bookings_total}
+                        Слоти: {row.slots_total} · Бронювання:{" "}
+                        {row.bookings_total}
                       </p>
                       <p className="meta-line">
                         Завантаження: {row.utilization_rate_percent}%
