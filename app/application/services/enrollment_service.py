@@ -18,10 +18,11 @@ from app.application.interfaces.enrollment_repository import (
     BookingProjection,
     DisciplineAnalyticsProjection,
     EnrollmentRepositoryInterface,
+    TeacherSlotBookingProjection,
     TeacherAnalyticsProjection,
     TeacherSlotProjection,
 )
-from app.domain.entities.booking import Booking
+from app.domain.entities.booking import Booking, BookingStatus
 from app.domain.entities.city import City
 from app.domain.entities.discipline import Discipline
 from app.domain.entities.student import Student
@@ -90,6 +91,11 @@ class BookingOwnershipError(EnrollmentError):
         super().__init__(f"Booking {booking_id} does not belong to the current student.")
 
 
+class BookingSlotMismatchError(EnrollmentError):
+    def __init__(self, booking_id: int, slot_id: int) -> None:
+        super().__init__(f"Booking {booking_id} does not belong to slot {slot_id}.")
+
+
 class TeacherSlotAccessError(EnrollmentError):
     def __init__(self, slot_id: int) -> None:
         super().__init__(f"Slot {slot_id} does not belong to the current teacher.")
@@ -98,6 +104,18 @@ class TeacherSlotAccessError(EnrollmentError):
 class SlotTimeRangeError(EnrollmentError):
     def __init__(self) -> None:
         super().__init__("Slot ends_at must be later than starts_at.")
+
+
+class BookingStatusTransitionError(EnrollmentError):
+    def __init__(self, booking_id: int, from_status: BookingStatus, to_status: BookingStatus) -> None:
+        super().__init__(
+            f"Booking {booking_id} cannot be moved from {from_status.value} to {to_status.value}.",
+        )
+
+
+class StudentTimeConflictError(EnrollmentError):
+    def __init__(self) -> None:
+        super().__init__("Student already has another active booking in this time range.")
 
 
 class AnalyticsFilterRangeError(EnrollmentError):
@@ -145,6 +163,8 @@ class EnrollmentService:
         self,
         city_id: int | None = None,
         discipline_id: int | None = None,
+        skip: int = 0,
+        limit: int = 50,
     ) -> list[Teacher]:
         if city_id is not None:
             city = await self._repository.get_city_by_id(city_id)
@@ -156,7 +176,12 @@ class EnrollmentService:
             if discipline is None:
                 raise DisciplineNotFoundError(discipline_id)
 
-        return await self._repository.list_teachers(city_id=city_id, discipline_id=discipline_id)
+        return await self._repository.list_teachers(
+            city_id=city_id,
+            discipline_id=discipline_id,
+            skip=skip,
+            limit=limit,
+        )
 
     async def create_student(self, student_in: StudentCreateDTO) -> Student:
         city = await self._repository.get_city_by_id(student_in.city_id)
@@ -280,6 +305,8 @@ class EnrollmentService:
         city_id: int | None = None,
         discipline_id: int | None = None,
         teacher_id: int | None = None,
+        skip: int = 0,
+        limit: int = 50,
     ) -> list[AvailableSlotProjection]:
         if city_id is not None:
             city = await self._repository.get_city_by_id(city_id)
@@ -300,6 +327,8 @@ class EnrollmentService:
             city_id=city_id,
             discipline_id=discipline_id,
             teacher_id=teacher_id,
+            skip=skip,
+            limit=limit,
         )
 
     async def get_overview_analytics(
@@ -383,9 +412,17 @@ class EnrollmentService:
         if not slot.is_active:
             raise SlotIsInactiveError(slot.id)
 
-        existing_booking = await self._repository.has_booking(booking_in.student_id, booking_in.slot_id)
+        existing_booking = await self._repository.has_active_booking(booking_in.student_id, booking_in.slot_id)
         if existing_booking:
             raise DuplicateBookingError(booking_in.student_id, booking_in.slot_id)
+
+        has_time_conflict = await self._repository.student_has_time_conflict(
+            booking_in.student_id,
+            slot.starts_at,
+            slot.ends_at,
+        )
+        if has_time_conflict:
+            raise StudentTimeConflictError
 
         booked_seats = await self._repository.count_slot_bookings(booking_in.slot_id)
         if booked_seats >= slot.capacity:
@@ -399,13 +436,46 @@ class EnrollmentService:
         except IntegrityError as error:
             raise DuplicateBookingError(booking_in.student_id, booking_in.slot_id) from error
 
-    async def list_bookings(self, student_id: int | None = None) -> list[BookingProjection]:
+    async def list_bookings(
+        self,
+        student_id: int | None = None,
+        status: BookingStatus | None = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> list[BookingProjection]:
         if student_id is not None:
             student = await self._repository.get_student_by_id(student_id)
             if student is None:
                 raise StudentNotFoundError(student_id)
 
-        return await self._repository.list_bookings(student_id=student_id)
+        return await self._repository.list_bookings(
+            student_id=student_id,
+            status=status,
+            skip=skip,
+            limit=limit,
+        )
+
+    async def list_teacher_slot_bookings(
+        self,
+        teacher_id: int,
+        slot_id: int,
+        status: BookingStatus | None = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> list[TeacherSlotBookingProjection]:
+        slot = await self._repository.get_slot_by_id(slot_id)
+        if slot is None:
+            raise SlotNotFoundError(slot_id)
+
+        if slot.teacher_id != teacher_id:
+            raise TeacherSlotAccessError(slot_id)
+
+        return await self._repository.list_teacher_slot_bookings(
+            slot_id=slot_id,
+            status=status,
+            skip=skip,
+            limit=limit,
+        )
 
     async def cancel_booking(
         self,
@@ -419,7 +489,72 @@ class EnrollmentService:
         if student_id is not None and booking.student_id != student_id:
             raise BookingOwnershipError(booking_id)
 
-        await self._repository.delete_booking(booking)
+        if booking.status != BookingStatus.ACTIVE:
+            raise BookingStatusTransitionError(
+                booking_id,
+                booking.status,
+                BookingStatus.CANCELLED,
+            )
+
+        await self._repository.update_booking_status(booking, BookingStatus.CANCELLED)
+
+    async def cancel_booking_for_teacher(
+        self,
+        teacher_id: int,
+        slot_id: int,
+        booking_id: int,
+    ) -> Booking:
+        slot = await self._repository.get_slot_by_id(slot_id)
+        if slot is None:
+            raise SlotNotFoundError(slot_id)
+
+        if slot.teacher_id != teacher_id:
+            raise TeacherSlotAccessError(slot_id)
+
+        booking = await self._repository.get_booking_by_id(booking_id)
+        if booking is None:
+            raise BookingNotFoundError(booking_id)
+
+        if booking.slot_id != slot_id:
+            raise BookingSlotMismatchError(booking_id, slot_id)
+
+        if booking.status != BookingStatus.ACTIVE:
+            raise BookingStatusTransitionError(
+                booking_id,
+                booking.status,
+                BookingStatus.CANCELLED,
+            )
+
+        return await self._repository.update_booking_status(booking, BookingStatus.CANCELLED)
+
+    async def complete_booking_for_teacher(
+        self,
+        teacher_id: int,
+        slot_id: int,
+        booking_id: int,
+    ) -> Booking:
+        slot = await self._repository.get_slot_by_id(slot_id)
+        if slot is None:
+            raise SlotNotFoundError(slot_id)
+
+        if slot.teacher_id != teacher_id:
+            raise TeacherSlotAccessError(slot_id)
+
+        booking = await self._repository.get_booking_by_id(booking_id)
+        if booking is None:
+            raise BookingNotFoundError(booking_id)
+
+        if booking.slot_id != slot_id:
+            raise BookingSlotMismatchError(booking_id, slot_id)
+
+        if booking.status != BookingStatus.ACTIVE:
+            raise BookingStatusTransitionError(
+                booking_id,
+                booking.status,
+                BookingStatus.COMPLETED,
+            )
+
+        return await self._repository.update_booking_status(booking, BookingStatus.COMPLETED)
 
     async def _validate_analytics_filters(
         self,

@@ -5,7 +5,7 @@ React + Vite client for student-teacher enrollment workflow.
 Roles in UI:
 
 - Student dashboard (discover slots, create/cancel bookings)
-- Teacher dashboard (manage own slots)
+- Teacher dashboard (manage own slots and see/manage booked students per slot)
 - Admin panel (create teacher accounts)
 - Admin analytics (overview KPIs + teacher/discipline performance filters)
 

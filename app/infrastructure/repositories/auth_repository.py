@@ -21,8 +21,13 @@ class AuthRepository(AuthRepositoryInterface):
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def list_users(self) -> list[UserAccount]:
-        stmt = select(UserAccount).order_by(UserAccount.role, UserAccount.username)
+    async def list_users(self, *, skip: int = 0, limit: int = 50) -> list[UserAccount]:
+        stmt = (
+            select(UserAccount)
+            .order_by(UserAccount.role, UserAccount.username)
+            .offset(skip)
+            .limit(limit)
+        )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 

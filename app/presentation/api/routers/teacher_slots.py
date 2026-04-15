@@ -1,15 +1,20 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.application.dto.enrollment_dto import (
+    BookingReadDTO,
+    TeacherSlotBookingReadDTO,
     TeacherSlotDetailsReadDTO,
     TeacherSlotManageCreateDTO,
     TeacherSlotReadDTO,
     TeacherSlotUpdateDTO,
 )
-from app.application.interfaces.enrollment_repository import TeacherSlotProjection
+from app.application.interfaces.enrollment_repository import TeacherSlotBookingProjection, TeacherSlotProjection
 from app.application.services.enrollment_service import (
+    BookingNotFoundError,
+    BookingSlotMismatchError,
+    BookingStatusTransitionError,
     DisciplineNotFoundError,
     EnrollmentService,
     SlotNotFoundError,
@@ -18,6 +23,7 @@ from app.application.services.enrollment_service import (
     TeacherNotFoundError,
     TeacherSlotAccessError,
 )
+from app.domain.entities.booking import BookingStatus
 from app.domain.entities.user_account import UserAccount, UserRole
 from app.presentation.api.dependencies import get_enrollment_service
 from app.presentation.api.security import require_roles
@@ -53,6 +59,17 @@ def _resolve_teacher_id(current_user: UserAccount) -> int:
         )
 
     return current_user.teacher_id
+
+
+def _to_teacher_slot_booking(slot_booking: TeacherSlotBookingProjection) -> TeacherSlotBookingReadDTO:
+    return TeacherSlotBookingReadDTO(
+        booking_id=slot_booking.booking_id,
+        student_id=slot_booking.student_id,
+        student_name=slot_booking.student_name,
+        student_email=slot_booking.student_email,
+        status=slot_booking.status,
+        created_at=slot_booking.created_at,
+    )
 
 
 @router.get("/", response_model=list[TeacherSlotDetailsReadDTO])
@@ -125,3 +142,80 @@ async def delete_my_slot(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{slot_id}/bookings", response_model=list[TeacherSlotBookingReadDTO])
+async def list_slot_bookings(
+    slot_id: int,
+    service: EnrollmentServiceDependency,
+    current_user: TeacherUserDependency,
+    status_filter: BookingStatus | None = Query(default=None, alias="status"),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[TeacherSlotBookingReadDTO]:
+    teacher_id = _resolve_teacher_id(current_user)
+
+    try:
+        rows = await service.list_teacher_slot_bookings(
+            teacher_id=teacher_id,
+            slot_id=slot_id,
+            status=status_filter,
+            skip=skip,
+            limit=limit,
+        )
+    except SlotNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except TeacherSlotAccessError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+
+    return [_to_teacher_slot_booking(row) for row in rows]
+
+
+@router.post("/{slot_id}/bookings/{booking_id}/cancel", response_model=BookingReadDTO)
+async def cancel_slot_booking(
+    slot_id: int,
+    booking_id: int,
+    service: EnrollmentServiceDependency,
+    current_user: TeacherUserDependency,
+) -> BookingReadDTO:
+    teacher_id = _resolve_teacher_id(current_user)
+
+    try:
+        booking = await service.cancel_booking_for_teacher(
+            teacher_id=teacher_id,
+            slot_id=slot_id,
+            booking_id=booking_id,
+        )
+    except (SlotNotFoundError, BookingNotFoundError) as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except TeacherSlotAccessError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except (BookingSlotMismatchError, BookingStatusTransitionError) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    return BookingReadDTO.model_validate(booking)
+
+
+@router.post("/{slot_id}/bookings/{booking_id}/complete", response_model=BookingReadDTO)
+async def complete_slot_booking(
+    slot_id: int,
+    booking_id: int,
+    service: EnrollmentServiceDependency,
+    current_user: TeacherUserDependency,
+) -> BookingReadDTO:
+    teacher_id = _resolve_teacher_id(current_user)
+
+    try:
+        booking = await service.complete_booking_for_teacher(
+            teacher_id=teacher_id,
+            slot_id=slot_id,
+            booking_id=booking_id,
+        )
+    except (SlotNotFoundError, BookingNotFoundError) as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except TeacherSlotAccessError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except (BookingSlotMismatchError, BookingStatusTransitionError) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    return BookingReadDTO.model_validate(booking)

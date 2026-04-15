@@ -57,12 +57,12 @@ Current integration coverage includes:
 
 Base prefix: `/api/v1/auth`
 
-- `POST /bootstrap-admin` - one-time admin initialization (if no admins exist)
+- `POST /bootstrap-admin` - one-time admin initialization (if no admins exist). This is a technical endpoint and is hidden from the public login UI.
 - `POST /register/student` - register student account and return bearer token
 - `POST /register/teacher` - create teacher account (admin only)
 - `POST /login` - login and receive bearer token
 - `GET /me` - current authenticated account
-- `GET /accounts` - list all accounts (admin only)
+- `GET /accounts?skip=&limit=` - list accounts with pagination (admin only)
 
 ### Enrollment
 
@@ -73,14 +73,14 @@ Base prefix: `/api/v1/enrollment`
 - `POST /disciplines` - create discipline (admin only)
 - `GET /disciplines` - list disciplines
 - `POST /teachers` - create teacher and assign disciplines (admin only)
-- `GET /teachers?city_id=&discipline_id=` - filter teachers
+- `GET /teachers?city_id=&discipline_id=&skip=&limit=` - filter teachers with pagination
 - `POST /students` - create student profile (admin only)
 - `GET /students?city_id=&email=` - list students and find profile by email (admin only)
 - `POST /slots` - create teacher slot for discipline (admin only)
-- `GET /slots/available?city_id=&discipline_id=&teacher_id=` - list available slots only
+- `GET /slots/available?city_id=&discipline_id=&teacher_id=&skip=&limit=` - list available slots only with pagination
 - `POST /bookings` - book slot (student/admin; student is limited to own profile)
-- `GET /bookings?student_id=` - list bookings (student/admin; student sees only own)
-- `DELETE /bookings/{booking_id}` - cancel booking (student/admin; student can cancel only own)
+- `GET /bookings?student_id=&status=&skip=&limit=` - list bookings (student/admin; student sees only own) with status history
+- `DELETE /bookings/{booking_id}` - cancel booking by status transition to `cancelled` (soft lifecycle)
 
 ### Admin Analytics
 
@@ -98,6 +98,9 @@ Base prefix: `/api/v1/teacher/slots` (teacher role)
 - `POST /` - create new slot for authenticated teacher
 - `PUT /{slot_id}` - update own slot
 - `DELETE /{slot_id}` - delete own slot
+- `GET /{slot_id}/bookings?status=&skip=&limit=` - list students booked into selected slot
+- `POST /{slot_id}/bookings/{booking_id}/cancel` - cancel student booking from teacher side
+- `POST /{slot_id}/bookings/{booking_id}/complete` - mark student booking as completed
 
 ## Demo Credentials (seed)
 

@@ -61,6 +61,22 @@ async def _ensure_admin_token(client: AsyncClient) -> str | None:
     return None
 
 
+async def _ensure_teacher_headers(
+    client: AsyncClient,
+    username: str = "teacher_ivan",
+    password: str = "teacher123",
+) -> dict[str, str] | None:
+    login_response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": username, "password": password},
+    )
+    if login_response.status_code != 200:
+        return None
+
+    token = login_response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.mark.asyncio
 async def test_auth_me_requires_token() -> None:
     async with AsyncClient(
@@ -237,3 +253,162 @@ async def test_student_cannot_spoof_student_id_on_booking_create() -> None:
         )
 
     assert cancel_response.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_list_endpoints_support_skip_limit_pagination() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        admin_token = await _ensure_admin_token(client)
+        if admin_token is None:
+            pytest.skip("Unable to authenticate admin with default bootstrap credentials.")
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+        accounts_response = await client.get(
+            "/api/v1/auth/accounts?skip=0&limit=1",
+            headers=admin_headers,
+        )
+        assert accounts_response.status_code == 200
+        assert len(accounts_response.json()) <= 1
+
+        teachers_response = await client.get("/api/v1/enrollment/teachers?skip=0&limit=1")
+        assert teachers_response.status_code == 200
+        assert len(teachers_response.json()) <= 1
+
+        slots_response = await client.get("/api/v1/enrollment/slots/available?skip=0&limit=1")
+        assert slots_response.status_code == 200
+        assert len(slots_response.json()) <= 1
+
+        _, student_headers = await _register_student(client)
+        bookings_response = await client.get(
+            "/api/v1/enrollment/bookings?skip=0&limit=1",
+            headers=student_headers,
+        )
+        assert bookings_response.status_code == 200
+        assert len(bookings_response.json()) <= 1
+
+
+@pytest.mark.asyncio
+async def test_teacher_can_view_and_manage_slot_bookings() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        teacher_headers = await _ensure_teacher_headers(client)
+        if teacher_headers is None:
+            pytest.skip("Seeded teacher account is required for this test.")
+
+        teacher_slots_response = await client.get(
+            "/api/v1/teacher/slots/",
+            headers=teacher_headers,
+        )
+        assert teacher_slots_response.status_code == 200
+        teacher_slots = teacher_slots_response.json()
+
+        target_slot = next(
+            (
+                slot
+                for slot in teacher_slots
+                if slot["is_active"] and slot["available_seats"] > 0
+            ),
+            None,
+        )
+        if target_slot is None:
+            pytest.skip("Teacher has no active slot with available seats.")
+
+        slot_id = target_slot["slot_id"]
+
+        student_payload, student_headers = await _register_student(client)
+        booking_response = await client.post(
+            "/api/v1/enrollment/bookings",
+            headers=student_headers,
+            json={"student_id": student_payload["student_id"], "slot_id": slot_id},
+        )
+        if booking_response.status_code != 201:
+            pytest.skip("Could not create booking for teacher management test.")
+        booking_id = booking_response.json()["id"]
+
+        slot_bookings_response = await client.get(
+            f"/api/v1/teacher/slots/{slot_id}/bookings",
+            headers=teacher_headers,
+        )
+        assert slot_bookings_response.status_code == 200
+        slot_bookings = slot_bookings_response.json()
+        managed_booking = next(
+            booking for booking in slot_bookings if booking["booking_id"] == booking_id
+        )
+        assert managed_booking["student_email"].endswith("@example.com")
+        assert managed_booking["status"] == "active"
+
+        cancel_response = await client.post(
+            f"/api/v1/teacher/slots/{slot_id}/bookings/{booking_id}/cancel",
+            headers=teacher_headers,
+        )
+        assert cancel_response.status_code == 200
+        assert cancel_response.json()["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_student_cannot_book_overlapping_slots() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        teacher_headers = await _ensure_teacher_headers(client)
+        if teacher_headers is None:
+            pytest.skip("Seeded teacher account is required for this test.")
+
+        teacher_slots_response = await client.get(
+            "/api/v1/teacher/slots/",
+            headers=teacher_headers,
+        )
+        assert teacher_slots_response.status_code == 200
+        teacher_slots = teacher_slots_response.json()
+        if not teacher_slots:
+            pytest.skip("Teacher has no slots to clone for overlap testing.")
+
+        template_slot = teacher_slots[0]
+
+        create_slot_payload = {
+            "discipline_id": template_slot["discipline_id"],
+            "starts_at": template_slot["starts_at"],
+            "ends_at": template_slot["ends_at"],
+            "capacity": 2,
+            "is_active": True,
+        }
+
+        slot_a_response = await client.post(
+            "/api/v1/teacher/slots/",
+            headers=teacher_headers,
+            json=create_slot_payload,
+        )
+        slot_b_response = await client.post(
+            "/api/v1/teacher/slots/",
+            headers=teacher_headers,
+            json=create_slot_payload,
+        )
+        if slot_a_response.status_code != 201 or slot_b_response.status_code != 201:
+            pytest.skip("Could not create overlapping slots for conflict test.")
+
+        slot_a_id = slot_a_response.json()["id"]
+        slot_b_id = slot_b_response.json()["id"]
+
+        student_payload, student_headers = await _register_student(client)
+        student_id = student_payload["student_id"]
+
+        first_booking_response = await client.post(
+            "/api/v1/enrollment/bookings",
+            headers=student_headers,
+            json={"student_id": student_id, "slot_id": slot_a_id},
+        )
+        assert first_booking_response.status_code == 201
+
+        second_booking_response = await client.post(
+            "/api/v1/enrollment/bookings",
+            headers=student_headers,
+            json={"student_id": student_id, "slot_id": slot_b_id},
+        )
+
+    assert second_booking_response.status_code == 409

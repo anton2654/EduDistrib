@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -18,10 +18,11 @@ from app.application.interfaces.enrollment_repository import (
     BookingProjection,
     DisciplineAnalyticsProjection,
     EnrollmentRepositoryInterface,
+    TeacherSlotBookingProjection,
     TeacherAnalyticsProjection,
     TeacherSlotProjection,
 )
-from app.domain.entities.booking import Booking
+from app.domain.entities.booking import Booking, BookingStatus
 from app.domain.entities.city import City
 from app.domain.entities.discipline import Discipline
 from app.domain.entities.student import Student
@@ -113,6 +114,8 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
         self,
         city_id: int | None = None,
         discipline_id: int | None = None,
+        skip: int = 0,
+        limit: int = 50,
     ) -> list[Teacher]:
         stmt = (
             select(Teacher)
@@ -127,6 +130,8 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
             stmt = stmt.join(TeacherDiscipline).where(
                 TeacherDiscipline.discipline_id == discipline_id,
             )
+
+        stmt = stmt.offset(skip).limit(limit)
 
         result = await self._session.execute(stmt)
         return list(result.unique().scalars().all())
@@ -189,7 +194,10 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
         return await self._session.get(TeacherSlot, slot_id)
 
     async def list_teacher_slots(self, teacher_id: int) -> list[TeacherSlotProjection]:
-        reserved_seats = func.count(Booking.id)
+        reserved_seats = func.coalesce(
+            func.sum(case((Booking.status == BookingStatus.ACTIVE, 1), else_=0)),
+            0,
+        )
 
         stmt = (
             select(
@@ -255,8 +263,13 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
         city_id: int | None = None,
         discipline_id: int | None = None,
         teacher_id: int | None = None,
+        skip: int = 0,
+        limit: int = 50,
     ) -> list[AvailableSlotProjection]:
-        reserved_seats = func.count(Booking.id)
+        reserved_seats = func.coalesce(
+            func.sum(case((Booking.status == BookingStatus.ACTIVE, 1), else_=0)),
+            0,
+        )
 
         stmt = (
             select(
@@ -301,6 +314,8 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
 
         if teacher_id is not None:
             stmt = stmt.where(Teacher.id == teacher_id)
+
+        stmt = stmt.offset(skip).limit(limit)
 
         rows = (await self._session.execute(stmt)).mappings().all()
 
@@ -349,7 +364,10 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 TeacherSlot.id.label("slot_id"),
                 TeacherSlot.is_active.label("is_active"),
                 TeacherSlot.capacity.label("capacity"),
-                func.count(Booking.id).label("reserved_seats"),
+                func.coalesce(
+                    func.sum(case((Booking.status == BookingStatus.ACTIVE, 1), else_=0)),
+                    0,
+                ).label("reserved_seats"),
             )
             .join(Teacher, Teacher.id == TeacherSlot.teacher_id)
             .outerjoin(Booking, Booking.slot_id == TeacherSlot.id)
@@ -420,7 +438,10 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 TeacherSlot.id.label("slot_id"),
                 TeacherSlot.is_active.label("is_active"),
                 TeacherSlot.capacity.label("capacity"),
-                func.count(Booking.id).label("reserved_seats"),
+                func.coalesce(
+                    func.sum(case((Booking.status == BookingStatus.ACTIVE, 1), else_=0)),
+                    0,
+                ).label("reserved_seats"),
             )
             .join(Teacher, Teacher.id == TeacherSlot.teacher_id)
             .join(City, City.id == Teacher.city_id)
@@ -511,7 +532,10 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 TeacherSlot.id.label("slot_id"),
                 TeacherSlot.is_active.label("is_active"),
                 TeacherSlot.capacity.label("capacity"),
-                func.count(Booking.id).label("reserved_seats"),
+                func.coalesce(
+                    func.sum(case((Booking.status == BookingStatus.ACTIVE, 1), else_=0)),
+                    0,
+                ).label("reserved_seats"),
             )
             .join(Teacher, Teacher.id == TeacherSlot.teacher_id)
             .join(Discipline, Discipline.id == TeacherSlot.discipline_id)
@@ -572,26 +596,60 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
         ]
 
     async def count_slot_bookings(self, slot_id: int) -> int:
-        stmt = select(func.count(Booking.id)).where(Booking.slot_id == slot_id)
+        stmt = select(func.count(Booking.id)).where(
+            Booking.slot_id == slot_id,
+            Booking.status == BookingStatus.ACTIVE,
+        )
         result = await self._session.execute(stmt)
         return int(result.scalar_one() or 0)
 
-    async def has_booking(self, student_id: int, slot_id: int) -> bool:
+    async def has_active_booking(self, student_id: int, slot_id: int) -> bool:
         stmt = select(Booking.id).where(
             Booking.student_id == student_id,
             Booking.slot_id == slot_id,
+            Booking.status == BookingStatus.ACTIVE,
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
+    async def student_has_time_conflict(
+        self,
+        student_id: int,
+        starts_at: datetime,
+        ends_at: datetime,
+    ) -> bool:
+        stmt = (
+            select(Booking.id)
+            .join(TeacherSlot, TeacherSlot.id == Booking.slot_id)
+            .where(
+                Booking.student_id == student_id,
+                Booking.status == BookingStatus.ACTIVE,
+                TeacherSlot.starts_at < ends_at,
+                TeacherSlot.ends_at > starts_at,
+            )
+            .limit(1)
         )
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none() is not None
 
     async def create_booking(self, student_id: int, slot_id: int) -> Booking:
-        booking = Booking(student_id=student_id, slot_id=slot_id)
+        booking = Booking(
+            student_id=student_id,
+            slot_id=slot_id,
+            status=BookingStatus.ACTIVE,
+        )
         self._session.add(booking)
         await self._session.commit()
         await self._session.refresh(booking)
         return booking
 
-    async def list_bookings(self, student_id: int | None = None) -> list[BookingProjection]:
+    async def list_bookings(
+        self,
+        student_id: int | None = None,
+        status: BookingStatus | None = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> list[BookingProjection]:
         stmt = (
             select(
                 Booking.id.label("booking_id"),
@@ -607,6 +665,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 Discipline.name.label("discipline_name"),
                 TeacherSlot.starts_at,
                 TeacherSlot.ends_at,
+                Booking.status,
                 Booking.created_at,
             )
             .join(Student, Student.id == Booking.student_id)
@@ -619,6 +678,11 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
 
         if student_id is not None:
             stmt = stmt.where(Student.id == student_id)
+
+        if status is not None:
+            stmt = stmt.where(Booking.status == status)
+
+        stmt = stmt.offset(skip).limit(limit)
 
         rows = (await self._session.execute(stmt)).mappings().all()
 
@@ -637,6 +701,46 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 discipline_name=row["discipline_name"],
                 starts_at=row["starts_at"],
                 ends_at=row["ends_at"],
+                status=row["status"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    async def list_teacher_slot_bookings(
+        self,
+        slot_id: int,
+        status: BookingStatus | None = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> list[TeacherSlotBookingProjection]:
+        stmt = (
+            select(
+                Booking.id.label("booking_id"),
+                Student.id.label("student_id"),
+                Student.full_name.label("student_name"),
+                Student.email.label("student_email"),
+                Booking.status,
+                Booking.created_at,
+            )
+            .join(Student, Student.id == Booking.student_id)
+            .where(Booking.slot_id == slot_id)
+            .order_by(Booking.created_at, Booking.id)
+            .offset(skip)
+            .limit(limit)
+        )
+
+        if status is not None:
+            stmt = stmt.where(Booking.status == status)
+
+        rows = (await self._session.execute(stmt)).mappings().all()
+        return [
+            TeacherSlotBookingProjection(
+                booking_id=row["booking_id"],
+                student_id=row["student_id"],
+                student_name=row["student_name"],
+                student_email=row["student_email"],
+                status=row["status"],
                 created_at=row["created_at"],
             )
             for row in rows
@@ -644,6 +748,12 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
 
     async def get_booking_by_id(self, booking_id: int) -> Booking | None:
         return await self._session.get(Booking, booking_id)
+
+    async def update_booking_status(self, booking: Booking, status: BookingStatus) -> Booking:
+        booking.status = status
+        await self._session.commit()
+        await self._session.refresh(booking)
+        return booking
 
     async def delete_booking(self, booking: Booking) -> None:
         await self._session.delete(booking)

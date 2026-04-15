@@ -10,7 +10,7 @@ from app.application.dto.enrollment_dto import (
     TeacherCreateDTO,
     TeacherSlotCreateDTO,
 )
-from app.domain.entities.booking import Booking
+from app.domain.entities.booking import Booking, BookingStatus
 from app.domain.entities.city import City
 from app.domain.entities.discipline import Discipline
 from app.domain.entities.student import Student
@@ -48,6 +48,17 @@ class BookingProjection:
     discipline_name: str
     starts_at: datetime
     ends_at: datetime
+    status: BookingStatus
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class TeacherSlotBookingProjection:
+    booking_id: int
+    student_id: int
+    student_name: str
+    student_email: str
+    status: BookingStatus
     created_at: datetime
 
 
@@ -139,6 +150,8 @@ class EnrollmentRepositoryInterface(ABC):
         self,
         city_id: int | None = None,
         discipline_id: int | None = None,
+        skip: int = 0,
+        limit: int = 50,
     ) -> list[Teacher]:
         raise NotImplementedError
 
@@ -192,6 +205,8 @@ class EnrollmentRepositoryInterface(ABC):
         city_id: int | None = None,
         discipline_id: int | None = None,
         teacher_id: int | None = None,
+        skip: int = 0,
+        limit: int = 50,
     ) -> list[AvailableSlotProjection]:
         raise NotImplementedError
 
@@ -233,7 +248,16 @@ class EnrollmentRepositoryInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def has_booking(self, student_id: int, slot_id: int) -> bool:
+    async def has_active_booking(self, student_id: int, slot_id: int) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def student_has_time_conflict(
+        self,
+        student_id: int,
+        starts_at: datetime,
+        ends_at: datetime,
+    ) -> bool:
         raise NotImplementedError
 
     @abstractmethod
@@ -241,11 +265,31 @@ class EnrollmentRepositoryInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def list_bookings(self, student_id: int | None = None) -> list[BookingProjection]:
+    async def list_bookings(
+        self,
+        student_id: int | None = None,
+        status: BookingStatus | None = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> list[BookingProjection]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_teacher_slot_bookings(
+        self,
+        slot_id: int,
+        status: BookingStatus | None = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> list[TeacherSlotBookingProjection]:
         raise NotImplementedError
 
     @abstractmethod
     async def get_booking_by_id(self, booking_id: int) -> Booking | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_booking_status(self, booking: Booking, status: BookingStatus) -> Booking:
         raise NotImplementedError
 
     @abstractmethod

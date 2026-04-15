@@ -460,6 +460,36 @@ h3 {
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
 }
 
+.teacher-bookings-panel {
+  border-top: 1px dashed #c5d8ea;
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.teacher-bookings-title {
+  margin: 0 0 8px;
+  color: #20455f;
+  font-weight: 700;
+}
+
+.teacher-bookings-list {
+  display: grid;
+  gap: 8px;
+}
+
+.teacher-booking-item {
+  border: 1px solid #d4e1ee;
+  border-radius: 10px;
+  background: #f8fbff;
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.teacher-booking-item p {
+  margin: 0;
+}
+
 .inline-actions {
   display: flex;
   gap: 8px;

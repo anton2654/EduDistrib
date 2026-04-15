@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.application.dto.auth_dto import (
     AccountReadDTO,
@@ -112,5 +112,7 @@ async def me(current_user: CurrentUserDependency) -> AccountReadDTO:
 async def list_accounts(
     service: AuthServiceDependency,
     _: AdminUserDependency,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
 ) -> list[AccountReadDTO]:
-    return await service.list_accounts()
+    return await service.list_accounts(skip=skip, limit=limit)

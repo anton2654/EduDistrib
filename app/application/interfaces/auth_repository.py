@@ -17,7 +17,7 @@ class AuthRepositoryInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def list_users(self) -> list[UserAccount]:
+    async def list_users(self, *, skip: int = 0, limit: int = 50) -> list[UserAccount]:
         raise NotImplementedError
 
     @abstractmethod

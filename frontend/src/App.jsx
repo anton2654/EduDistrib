@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  bootstrapAdmin,
+  cancelTeacherSlotBooking,
   cancelBooking,
   clearAccessToken,
+  completeTeacherSlotBooking,
   createBooking,
   createTeacherAccount,
   createTeacherSlot,
@@ -16,6 +17,7 @@ import {
   listCities,
   listDisciplineAnalytics,
   listDisciplines,
+  listTeacherSlotBookings,
   listTeacherAnalytics,
   listTeacherSlots,
   listTeachers,
@@ -32,6 +34,7 @@ import {
 import "./App.css";
 
 const TOKEN_STORAGE_KEY = "distributor_access_token";
+const ADMIN_ACCOUNTS_PAGE_SIZE = 10;
 
 const EMPTY_LOGIN = {
   username: "",
@@ -44,11 +47,6 @@ const EMPTY_STUDENT_REG = {
   fullName: "",
   email: "",
   cityId: "",
-};
-
-const EMPTY_BOOTSTRAP = {
-  username: "admin",
-  password: "admin12345",
 };
 
 const EMPTY_STUDENT_FILTERS = {
@@ -90,6 +88,12 @@ function App() {
   const [bookings, setBookings] = useState([]);
 
   const [teacherSlots, setTeacherSlots] = useState([]);
+  const [teacherSlotBookingsBySlotId, setTeacherSlotBookingsBySlotId] =
+    useState({});
+  const [expandedTeacherSlotId, setExpandedTeacherSlotId] = useState(null);
+  const [teacherBookingsLoadingSlotId, setTeacherBookingsLoadingSlotId] =
+    useState(null);
+  const [teacherBookingActionKey, setTeacherBookingActionKey] = useState(null);
   const [teacherSlotForm, setTeacherSlotForm] = useState(EMPTY_TEACHER_SLOT);
   const [editingSlotId, setEditingSlotId] = useState(null);
   const [editingSlotForm, setEditingSlotForm] = useState(EMPTY_TEACHER_SLOT);
@@ -104,13 +108,14 @@ function App() {
   const [overviewAnalytics, setOverviewAnalytics] = useState(null);
   const [teacherAnalyticsRows, setTeacherAnalyticsRows] = useState([]);
   const [disciplineAnalyticsRows, setDisciplineAnalyticsRows] = useState([]);
+  const [adminAccountsSkip, setAdminAccountsSkip] = useState(0);
+  const [hasMoreAdminAccounts, setHasMoreAdminAccounts] = useState(false);
 
   const [currentAccount, setCurrentAccount] = useState(null);
 
   const [loginDraft, setLoginDraft] = useState(EMPTY_LOGIN);
   const [studentRegisterDraft, setStudentRegisterDraft] =
     useState(EMPTY_STUDENT_REG);
-  const [bootstrapDraft, setBootstrapDraft] = useState(EMPTY_BOOTSTRAP);
 
   const [isCatalogLoading, setIsCatalogLoading] = useState(true);
   const [isSessionLoading, setIsSessionLoading] = useState(false);
@@ -130,6 +135,16 @@ function App() {
 
   const role = currentAccount?.role ?? null;
   const studentId = currentAccount?.student_id ?? null;
+
+  const activeStudentBookingSlotIds = useMemo(
+    () =>
+      new Set(
+        bookings
+          .filter((booking) => (booking.status ?? "active") === "active")
+          .map((booking) => booking.slot_id),
+      ),
+    [bookings],
+  );
 
   const dashboardStats = useMemo(() => {
     if (!role) {
@@ -188,6 +203,16 @@ function App() {
     teachers.length,
     overviewAnalytics,
   ]);
+
+  async function loadAdminAccountsPage(skipValue) {
+    const loadedAccounts = await listAccounts({
+      skip: skipValue,
+      limit: ADMIN_ACCOUNTS_PAGE_SIZE + 1,
+    });
+
+    setHasMoreAdminAccounts(loadedAccounts.length > ADMIN_ACCOUNTS_PAGE_SIZE);
+    setAccounts(loadedAccounts.slice(0, ADMIN_ACCOUNTS_PAGE_SIZE));
+  }
 
   useEffect(() => {
     async function loadCatalog() {
@@ -351,6 +376,8 @@ function App() {
   useEffect(() => {
     if (role !== "teacher") {
       setTeacherSlots([]);
+      setTeacherSlotBookingsBySlotId({});
+      setExpandedTeacherSlotId(null);
       return;
     }
 
@@ -376,6 +403,8 @@ function App() {
   useEffect(() => {
     if (role !== "admin") {
       setAccounts([]);
+      setAdminAccountsSkip(0);
+      setHasMoreAdminAccounts(false);
       return;
     }
 
@@ -383,8 +412,7 @@ function App() {
       setIsAdminAccountsLoading(true);
 
       try {
-        const loadedAccounts = await listAccounts();
-        setAccounts(loadedAccounts);
+        await loadAdminAccountsPage(adminAccountsSkip);
       } catch (error) {
         setNotice({
           kind: "error",
@@ -396,7 +424,7 @@ function App() {
     }
 
     void loadAccounts();
-  }, [role]);
+  }, [adminAccountsSkip, role]);
 
   useEffect(() => {
     if (role !== "admin") {
@@ -475,6 +503,8 @@ function App() {
     setCurrentAccount(null);
     setBookings([]);
     setTeacherSlots([]);
+    setTeacherSlotBookingsBySlotId({});
+    setExpandedTeacherSlotId(null);
     setAdminAnalyticsFilters(EMPTY_ADMIN_ANALYTICS_FILTERS);
     setOverviewAnalytics(null);
     setTeacherAnalyticsRows([]);
@@ -492,9 +522,29 @@ function App() {
     setStudentRegisterDraft((previous) => ({ ...previous, [name]: value }));
   }
 
-  function handleBootstrapChange(event) {
-    const { name, value } = event.target;
-    setBootstrapDraft((previous) => ({ ...previous, [name]: value }));
+  function validateStudentRegistrationDraft() {
+    const username = studentRegisterDraft.username.trim();
+    const password = studentRegisterDraft.password;
+    const fullName = studentRegisterDraft.fullName.trim();
+    const email = studentRegisterDraft.email.trim();
+
+    if (username.length < 3) {
+      return "Username має містити щонайменше 3 символи.";
+    }
+    if (password.length < 6) {
+      return "Password має містити щонайменше 6 символів.";
+    }
+    if (!fullName) {
+      return "Вкажіть повне ім'я.";
+    }
+    if (!email.includes("@")) {
+      return "Вкажіть коректний email.";
+    }
+    if (!studentRegisterDraft.cityId) {
+      return "Оберіть місто для реєстрації.";
+    }
+
+    return null;
   }
 
   function handleStudentFilterChange(event) {
@@ -565,6 +615,13 @@ function App() {
 
   async function handleStudentRegister(event) {
     event.preventDefault();
+
+    const validationError = validateStudentRegistrationDraft();
+    if (validationError) {
+      setNotice({ kind: "warning", text: validationError });
+      return;
+    }
+
     setIsAuthSubmitting(true);
 
     try {
@@ -589,31 +646,6 @@ function App() {
       setNotice({
         kind: "error",
         text: `Не вдалося зареєструвати студента: ${error.message}`,
-      });
-    } finally {
-      setIsAuthSubmitting(false);
-    }
-  }
-
-  async function handleBootstrapAdmin(event) {
-    event.preventDefault();
-    setIsAuthSubmitting(true);
-
-    try {
-      const payload = await bootstrapAdmin({
-        username: bootstrapDraft.username.trim().toLowerCase(),
-        password: bootstrapDraft.password,
-      });
-      setSessionFromTokenPayload(payload);
-      await refreshCurrentAccount();
-      setNotice({
-        kind: "success",
-        text: "Admin bootstrap виконано. Тепер можна створювати teacher-акаунти.",
-      });
-    } catch (error) {
-      setNotice({
-        kind: "warning",
-        text: `Bootstrap не виконано: ${error.message}`,
       });
     } finally {
       setIsAuthSubmitting(false);
@@ -797,6 +829,90 @@ function App() {
     }
   }
 
+  async function loadTeacherSlotBookings(slotId) {
+    setTeacherBookingsLoadingSlotId(slotId);
+
+    try {
+      const rows = await listTeacherSlotBookings(slotId);
+      setTeacherSlotBookingsBySlotId((previous) => ({
+        ...previous,
+        [slotId]: rows,
+      }));
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        text: `Не вдалося завантажити записи на слот: ${error.message}`,
+      });
+    } finally {
+      setTeacherBookingsLoadingSlotId(null);
+    }
+  }
+
+  async function handleToggleTeacherBookings(slotId) {
+    if (expandedTeacherSlotId === slotId) {
+      setExpandedTeacherSlotId(null);
+      return;
+    }
+
+    setExpandedTeacherSlotId(slotId);
+    await loadTeacherSlotBookings(slotId);
+  }
+
+  async function handleTeacherCancelBooking(slotId, bookingId) {
+    const actionKey = `${slotId}:${bookingId}:cancel`;
+    setTeacherBookingActionKey(actionKey);
+
+    try {
+      await cancelTeacherSlotBooking(slotId, bookingId);
+      const [loadedSlots, slotBookings] = await Promise.all([
+        listTeacherSlots(),
+        listTeacherSlotBookings(slotId),
+      ]);
+      setTeacherSlots(loadedSlots);
+      setTeacherSlotBookingsBySlotId((previous) => ({
+        ...previous,
+        [slotId]: slotBookings,
+      }));
+      setNotice({
+        kind: "success",
+        text: "Запис студента скасовано викладачем.",
+      });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        text: `Не вдалося скасувати запис студента: ${error.message}`,
+      });
+    } finally {
+      setTeacherBookingActionKey(null);
+    }
+  }
+
+  async function handleTeacherCompleteBooking(slotId, bookingId) {
+    const actionKey = `${slotId}:${bookingId}:complete`;
+    setTeacherBookingActionKey(actionKey);
+
+    try {
+      await completeTeacherSlotBooking(slotId, bookingId);
+      const [loadedSlots, slotBookings] = await Promise.all([
+        listTeacherSlots(),
+        listTeacherSlotBookings(slotId),
+      ]);
+      setTeacherSlots(loadedSlots);
+      setTeacherSlotBookingsBySlotId((previous) => ({
+        ...previous,
+        [slotId]: slotBookings,
+      }));
+      setNotice({ kind: "success", text: "Запис позначено як завершений." });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        text: `Не вдалося завершити запис: ${error.message}`,
+      });
+    } finally {
+      setTeacherBookingActionKey(null);
+    }
+  }
+
   async function handleCreateTeacherAccount(event) {
     event.preventDefault();
     setIsAdminAccountsLoading(true);
@@ -808,8 +924,12 @@ function App() {
         teacherId: teacherAccountForm.teacherId,
       });
 
-      const loadedAccounts = await listAccounts();
-      setAccounts(loadedAccounts);
+      if (adminAccountsSkip !== 0) {
+        setAdminAccountsSkip(0);
+      } else {
+        await loadAdminAccountsPage(0);
+      }
+
       setTeacherAccountForm(EMPTY_TEACHER_ACCOUNT);
       setNotice({ kind: "success", text: "Teacher account створено." });
     } catch (error) {
@@ -991,32 +1111,12 @@ function App() {
                 Зареєструватися як Student
               </button>
             </form>
-          </article>
-
-          <article className="panel reveal" style={{ animationDelay: "340ms" }}>
-            <h2>Bootstrap Admin (одноразово)</h2>
-            <form className="profile-form" onSubmit={handleBootstrapAdmin}>
-              <label>
-                Admin username
-                <input
-                  name="username"
-                  value={bootstrapDraft.username}
-                  onChange={handleBootstrapChange}
-                />
-              </label>
-              <label>
-                Admin password
-                <input
-                  name="password"
-                  type="password"
-                  value={bootstrapDraft.password}
-                  onChange={handleBootstrapChange}
-                />
-              </label>
-              <button type="submit" disabled={isAuthSubmitting}>
-                Ініціалізувати Admin
-              </button>
-            </form>
+            <p className="hint-text">
+              Bootstrap Admin - це технічний одноразовий endpoint для порожньої
+              БД. Його прибрано з інтерфейсу користувача; використовуйте
+              `/api/v1/auth/bootstrap-admin` лише під час первинного
+              розгортання.
+            </p>
           </article>
         </section>
       ) : null}
@@ -1115,36 +1215,47 @@ function App() {
               </p>
             ) : (
               <div className="slot-grid">
-                {availableSlots.map((slot, index) => (
-                  <article
-                    className="slot-card"
-                    key={slot.slot_id}
-                    style={{ animationDelay: `${index * 70 + 180}ms` }}
-                  >
-                    <p className="slot-topic">{slot.discipline_name}</p>
-                    <h3>{slot.teacher_name}</h3>
-                    <p className="slot-meta">{slot.city_name}</p>
-                    <p className="slot-time">
-                      {formatDateTimeRange(slot.starts_at, slot.ends_at)}
-                    </p>
-                    <p className="slot-capacity">
-                      Місця: {slot.available_seats}/{slot.capacity}
-                    </p>
+                {availableSlots.map((slot, index) => {
+                  const hasActiveBooking = activeStudentBookingSlotIds.has(
+                    slot.slot_id,
+                  );
 
-                    <button
-                      type="button"
-                      onClick={() => void handleBookSlot(slot.slot_id)}
-                      disabled={
-                        bookingInProgressSlotId === slot.slot_id ||
-                        slot.available_seats <= 0
-                      }
+                  return (
+                    <article
+                      className="slot-card"
+                      key={slot.slot_id}
+                      style={{ animationDelay: `${index * 70 + 180}ms` }}
                     >
-                      {bookingInProgressSlotId === slot.slot_id
-                        ? "Бронюю..."
-                        : "Записатися"}
-                    </button>
-                  </article>
-                ))}
+                      <p className="slot-topic">{slot.discipline_name}</p>
+                      <h3>{slot.teacher_name}</h3>
+                      <p className="slot-meta">{slot.city_name}</p>
+                      <p className="slot-time">
+                        {formatDateTimeRange(slot.starts_at, slot.ends_at)}
+                      </p>
+                      <p className="slot-capacity">
+                        Місця: {slot.available_seats}/{slot.capacity}
+                      </p>
+
+                      <button
+                        type="button"
+                        onClick={() => void handleBookSlot(slot.slot_id)}
+                        disabled={
+                          bookingInProgressSlotId === slot.slot_id ||
+                          slot.available_seats <= 0 ||
+                          hasActiveBooking
+                        }
+                      >
+                        {bookingInProgressSlotId === slot.slot_id
+                          ? "Бронюю..."
+                          : hasActiveBooking
+                            ? "Вже записані"
+                            : slot.available_seats <= 0
+                              ? "Немає місць"
+                              : "Записатися"}
+                      </button>
+                    </article>
+                  );
+                })}
               </div>
             )}
           </section>
@@ -1179,6 +1290,10 @@ function App() {
                           booking.ends_at,
                         )}
                       </p>
+                      <p className="slot-meta">
+                        Статус:{" "}
+                        {String(booking.status ?? "active").toUpperCase()}
+                      </p>
                     </div>
 
                     <button
@@ -1188,12 +1303,15 @@ function App() {
                         void handleCancelBooking(booking.booking_id)
                       }
                       disabled={
-                        cancelInProgressBookingId === booking.booking_id
+                        cancelInProgressBookingId === booking.booking_id ||
+                        booking.status !== "active"
                       }
                     >
-                      {cancelInProgressBookingId === booking.booking_id
-                        ? "Скасовую..."
-                        : "Скасувати"}
+                      {booking.status !== "active"
+                        ? "Недоступно"
+                        : cancelInProgressBookingId === booking.booking_id
+                          ? "Скасовую..."
+                          : "Скасувати"}
                     </button>
                   </article>
                 ))}
@@ -1310,6 +1428,18 @@ function App() {
                       <button
                         type="button"
                         className="ghost"
+                        onClick={() =>
+                          void handleToggleTeacherBookings(slot.slot_id)
+                        }
+                        disabled={teacherBookingsLoadingSlotId === slot.slot_id}
+                      >
+                        {expandedTeacherSlotId === slot.slot_id
+                          ? "Сховати записи"
+                          : "Записи студентів"}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
                         onClick={() => startEditingSlot(slot)}
                       >
                         Редагувати
@@ -1333,6 +1463,87 @@ function App() {
                         Видалити
                       </button>
                     </div>
+
+                    {expandedTeacherSlotId === slot.slot_id ? (
+                      <div className="teacher-bookings-panel">
+                        <p className="teacher-bookings-title">
+                          Записи на цей слот (
+                          {teacherSlotBookingsBySlotId[slot.slot_id]?.length ??
+                            0}
+                          )
+                        </p>
+
+                        {teacherBookingsLoadingSlotId === slot.slot_id ? (
+                          <p className="meta-line">Завантажую записи...</p>
+                        ) : teacherSlotBookingsBySlotId[slot.slot_id]
+                            ?.length ? (
+                          <div className="teacher-bookings-list">
+                            {teacherSlotBookingsBySlotId[slot.slot_id].map(
+                              (booking) => (
+                                <article
+                                  key={booking.booking_id}
+                                  className="teacher-booking-item"
+                                >
+                                  <div>
+                                    <p>
+                                      <strong>{booking.student_name}</strong>
+                                    </p>
+                                    <p className="meta-line">
+                                      {booking.student_email}
+                                    </p>
+                                    <p className="meta-line">
+                                      Статус:{" "}
+                                      {String(booking.status).toUpperCase()}
+                                    </p>
+                                  </div>
+
+                                  <div className="inline-actions">
+                                    <button
+                                      type="button"
+                                      className="ghost"
+                                      onClick={() =>
+                                        void handleTeacherCompleteBooking(
+                                          slot.slot_id,
+                                          booking.booking_id,
+                                        )
+                                      }
+                                      disabled={
+                                        teacherBookingActionKey ===
+                                          `${slot.slot_id}:${booking.booking_id}:complete` ||
+                                        booking.status !== "active"
+                                      }
+                                    >
+                                      Завершити
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="danger"
+                                      onClick={() =>
+                                        void handleTeacherCancelBooking(
+                                          slot.slot_id,
+                                          booking.booking_id,
+                                        )
+                                      }
+                                      disabled={
+                                        teacherBookingActionKey ===
+                                          `${slot.slot_id}:${booking.booking_id}:cancel` ||
+                                        booking.status !== "active"
+                                      }
+                                    >
+                                      Скасувати
+                                    </button>
+                                  </div>
+                                </article>
+                              ),
+                            )}
+                          </div>
+                        ) : (
+                          <p className="empty-state">
+                            Немає записаних студентів на цей слот.
+                          </p>
+                        )}
+                      </div>
+                    ) : null}
                   </article>
                 ))}
               </div>
@@ -1617,23 +1828,61 @@ function App() {
                 <span className="badge">
                   {isAdminAccountsLoading
                     ? "Оновлення..."
-                    : `Кількість: ${accounts.length}`}
+                    : `На сторінці: ${accounts.length}`}
                 </span>
               </div>
 
-              <div className="account-list">
-                {accounts.map((account) => (
-                  <div className="account-item" key={account.user_id}>
-                    <p>
-                      <strong>{account.username}</strong> · {account.role}
-                    </p>
-                    <p className="meta-line">
-                      student_id: {account.student_id ?? "-"}, teacher_id:{" "}
-                      {account.teacher_id ?? "-"}
-                    </p>
-                  </div>
-                ))}
+              <p className="meta-line">
+                Сторінка{" "}
+                {Math.floor(adminAccountsSkip / ADMIN_ACCOUNTS_PAGE_SIZE) + 1}
+              </p>
+
+              <div className="inline-actions">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() =>
+                    setAdminAccountsSkip((previous) =>
+                      Math.max(previous - ADMIN_ACCOUNTS_PAGE_SIZE, 0),
+                    )
+                  }
+                  disabled={isAdminAccountsLoading || adminAccountsSkip === 0}
+                >
+                  Попередня сторінка
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() =>
+                    setAdminAccountsSkip(
+                      (previous) => previous + ADMIN_ACCOUNTS_PAGE_SIZE,
+                    )
+                  }
+                  disabled={isAdminAccountsLoading || !hasMoreAdminAccounts}
+                >
+                  Наступна сторінка
+                </button>
               </div>
+
+              {accounts.length === 0 && !isAdminAccountsLoading ? (
+                <p className="empty-state">
+                  Акаунти не знайдено для цієї сторінки.
+                </p>
+              ) : (
+                <div className="account-list">
+                  {accounts.map((account) => (
+                    <div className="account-item" key={account.user_id}>
+                      <p>
+                        <strong>{account.username}</strong> · {account.role}
+                      </p>
+                      <p className="meta-line">
+                        student_id: {account.student_id ?? "-"}, teacher_id:{" "}
+                        {account.teacher_id ?? "-"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </article>
           </section>
 

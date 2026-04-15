@@ -54,7 +54,9 @@ async def test_booking_lifecycle_create_list_cancel() -> None:
             headers=auth_headers,
         )
         assert create_booking_response.status_code == 201
-        booking_id = create_booking_response.json()["id"]
+        created_booking_payload = create_booking_response.json()
+        booking_id = created_booking_payload["id"]
+        assert created_booking_payload["status"] == "active"
 
         list_booking_response = await client.get(
             "/api/v1/enrollment/bookings",
@@ -79,7 +81,17 @@ async def test_booking_lifecycle_create_list_cancel() -> None:
             headers=auth_headers,
         )
         assert list_after_cancel_response.status_code == 200
-        remaining_ids = {
-            booking["booking_id"] for booking in list_after_cancel_response.json()
-        }
-        assert booking_id not in remaining_ids
+        cancelled_booking = next(
+            booking
+            for booking in list_after_cancel_response.json()
+            if booking["booking_id"] == booking_id
+        )
+        assert cancelled_booking["status"] == "cancelled"
+
+        active_only_response = await client.get(
+            "/api/v1/enrollment/bookings?status=active",
+            headers=auth_headers,
+        )
+        assert active_only_response.status_code == 200
+        active_ids = {booking["booking_id"] for booking in active_only_response.json()}
+        assert booking_id not in active_ids

@@ -32,11 +32,18 @@ async function request(baseUrl, path, { method = "GET", body } = {}) {
     headers.Authorization = `Bearer ${accessToken}`;
   }
 
-  const response = await fetch(`${baseUrl}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let response;
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new Error(
+      "Не вдалося підключитися до API. Перевірте, чи backend запущений і VITE_API_BASE_URL налаштовано правильно.",
+    );
+  }
 
   if (!response.ok) {
     let detail = `Request failed: ${response.status}`;
@@ -45,9 +52,29 @@ async function request(baseUrl, path, { method = "GET", body } = {}) {
       const data = await response.json();
       if (typeof data?.detail === "string") {
         detail = data.detail;
+      } else if (Array.isArray(data?.detail)) {
+        detail = data.detail
+          .map((item) => {
+            if (typeof item === "string") {
+              return item;
+            }
+
+            const field = Array.isArray(item?.loc)
+              ? item.loc.slice(1).join(".")
+              : "";
+            const message = item?.msg ?? "Validation error";
+            return field ? `${field}: ${message}` : message;
+          })
+          .join("; ");
+      } else if (data?.detail != null) {
+        detail = String(data.detail);
       }
     } catch {
       // Keep fallback detail for non-JSON responses.
+    }
+
+    if (response.status === 422 && detail.startsWith("Request failed:")) {
+      detail = "Некоректні дані форми. Перевірте заповнені поля.";
     }
 
     throw new Error(detail);
@@ -81,10 +108,15 @@ export async function listDisciplines() {
   return request(ENROLLMENT_BASE_URL, "/disciplines");
 }
 
-export async function listTeachers({ cityId, disciplineId } = {}) {
+export async function listTeachers({ cityId, disciplineId, skip, limit } = {}) {
   return request(
     ENROLLMENT_BASE_URL,
-    `/teachers${toQuery({ city_id: cityId, discipline_id: disciplineId })}`,
+    `/teachers${toQuery({
+      city_id: cityId,
+      discipline_id: disciplineId,
+      skip,
+      limit,
+    })}`,
   );
 }
 
@@ -110,6 +142,8 @@ export async function listAvailableSlots({
   cityId,
   disciplineId,
   teacherId,
+  skip,
+  limit,
 } = {}) {
   return request(
     ENROLLMENT_BASE_URL,
@@ -117,6 +151,8 @@ export async function listAvailableSlots({
       city_id: cityId,
       discipline_id: disciplineId,
       teacher_id: teacherId,
+      skip,
+      limit,
     })}`,
   );
 }
@@ -188,10 +224,10 @@ export async function createBooking({ studentId, slotId }) {
   });
 }
 
-export async function listBookings({ studentId } = {}) {
+export async function listBookings({ studentId, status, skip, limit } = {}) {
   return request(
     ENROLLMENT_BASE_URL,
-    `/bookings${toQuery({ student_id: studentId })}`,
+    `/bookings${toQuery({ student_id: studentId, status, skip, limit })}`,
   );
 }
 
@@ -249,12 +285,42 @@ export async function getCurrentAccount() {
   return request(AUTH_BASE_URL, "/me");
 }
 
-export async function listAccounts() {
-  return request(AUTH_BASE_URL, "/accounts");
+export async function listAccounts({ skip, limit } = {}) {
+  return request(AUTH_BASE_URL, `/accounts${toQuery({ skip, limit })}`);
 }
 
 export async function listTeacherSlots() {
   return request(TEACHER_BASE_URL, "/slots/");
+}
+
+export async function listTeacherSlotBookings(
+  slotId,
+  { status, skip, limit } = {},
+) {
+  return request(
+    TEACHER_BASE_URL,
+    `/slots/${slotId}/bookings${toQuery({ status, skip, limit })}`,
+  );
+}
+
+export async function cancelTeacherSlotBooking(slotId, bookingId) {
+  return request(
+    TEACHER_BASE_URL,
+    `/slots/${slotId}/bookings/${bookingId}/cancel`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function completeTeacherSlotBooking(slotId, bookingId) {
+  return request(
+    TEACHER_BASE_URL,
+    `/slots/${slotId}/bookings/${bookingId}/complete`,
+    {
+      method: "POST",
+    },
+  );
 }
 
 export async function createTeacherSlot({

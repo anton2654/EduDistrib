@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.domain.entities.booking import BookingStatus
+
 
 class CityCreateDTO(BaseModel):
     name: str = Field(min_length=1, max_length=120)
@@ -188,6 +190,7 @@ class BookingReadDTO(BaseModel):
     id: int
     student_id: int
     slot_id: int
+    status: BookingStatus
     created_at: datetime
 
 
@@ -205,6 +208,16 @@ class BookingDetailsReadDTO(BaseModel):
     discipline_name: str
     starts_at: datetime
     ends_at: datetime
+    status: BookingStatus
+    created_at: datetime
+
+
+class TeacherSlotBookingReadDTO(BaseModel):
+    booking_id: int
+    student_id: int
+    student_name: str
+    student_email: str
+    status: BookingStatus
     created_at: datetime
 
 

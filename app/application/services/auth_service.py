@@ -130,8 +130,8 @@ class AuthService:
     async def get_user_by_id(self, user_id: int) -> UserAccount | None:
         return await self._repository.get_user_by_id(user_id)
 
-    async def list_accounts(self) -> list[AccountReadDTO]:
-        users = await self._repository.list_users()
+    async def list_accounts(self, *, skip: int = 0, limit: int = 50) -> list[AccountReadDTO]:
+        users = await self._repository.list_users(skip=skip, limit=limit)
         return [self._to_account_read(user) for user in users]
 
     def _build_token_response(self, user: UserAccount) -> TokenReadDTO:

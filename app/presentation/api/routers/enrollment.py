@@ -31,6 +31,7 @@ from app.application.interfaces.enrollment_repository import (
 )
 from app.application.services.enrollment_service import (
     AnalyticsFilterRangeError,
+    BookingStatusTransitionError,
     BookingOwnershipError,
     BookingNotFoundError,
     CityNotFoundError,
@@ -40,11 +41,13 @@ from app.application.services.enrollment_service import (
     SlotFullError,
     SlotIsInactiveError,
     SlotNotFoundError,
+    StudentTimeConflictError,
     StudentNotFoundError,
     TeacherDisciplineMismatchError,
     TeacherNotFoundError,
 )
 from app.domain.entities.teacher import Teacher
+from app.domain.entities.booking import BookingStatus
 from app.domain.entities.user_account import UserAccount, UserRole
 from app.presentation.api.dependencies import get_enrollment_service
 from app.presentation.api.security import get_student_user, require_roles
@@ -98,6 +101,7 @@ def _booking_to_dto(booking: BookingProjection) -> BookingDetailsReadDTO:
         discipline_name=booking.discipline_name,
         starts_at=booking.starts_at,
         ends_at=booking.ends_at,
+        status=booking.status,
         created_at=booking.created_at,
     )
 
@@ -196,9 +200,16 @@ async def list_teachers(
     service: EnrollmentServiceDependency,
     city_id: int | None = Query(default=None, gt=0),
     discipline_id: int | None = Query(default=None, gt=0),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
 ) -> list[TeacherReadDTO]:
     try:
-        teachers = await service.list_teachers(city_id=city_id, discipline_id=discipline_id)
+        teachers = await service.list_teachers(
+            city_id=city_id,
+            discipline_id=discipline_id,
+            skip=skip,
+            limit=limit,
+        )
     except (CityNotFoundError, DisciplineNotFoundError) as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
@@ -256,12 +267,16 @@ async def list_available_slots(
     city_id: int | None = Query(default=None, gt=0),
     discipline_id: int | None = Query(default=None, gt=0),
     teacher_id: int | None = Query(default=None, gt=0),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
 ) -> list[AvailableSlotReadDTO]:
     try:
         slots = await service.list_available_slots(
             city_id=city_id,
             discipline_id=discipline_id,
             teacher_id=teacher_id,
+            skip=skip,
+            limit=limit,
         )
     except (CityNotFoundError, DisciplineNotFoundError, TeacherNotFoundError) as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
@@ -368,7 +383,7 @@ async def create_booking(
         booking = await service.create_booking(booking_payload)
     except (StudentNotFoundError, SlotNotFoundError) as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-    except (SlotIsInactiveError, SlotFullError, DuplicateBookingError) as error:
+    except (SlotIsInactiveError, SlotFullError, DuplicateBookingError, StudentTimeConflictError) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     return BookingReadDTO.model_validate(booking)
@@ -379,6 +394,9 @@ async def list_bookings(
     service: EnrollmentServiceDependency,
     current_user: StudentUserDependency,
     student_id: int | None = Query(default=None, gt=0),
+    status_filter: BookingStatus | None = Query(default=None, alias="status"),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
 ) -> list[BookingDetailsReadDTO]:
     effective_student_id = student_id
     if current_user.role == UserRole.STUDENT:
@@ -390,7 +408,12 @@ async def list_bookings(
         effective_student_id = current_user.student_id
 
     try:
-        bookings = await service.list_bookings(student_id=effective_student_id)
+        bookings = await service.list_bookings(
+            student_id=effective_student_id,
+            status=status_filter,
+            skip=skip,
+            limit=limit,
+        )
     except StudentNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
@@ -418,5 +441,7 @@ async def cancel_booking(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except BookingOwnershipError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except BookingStatusTransitionError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)

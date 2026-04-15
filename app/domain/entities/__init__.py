@@ -1,5 +1,5 @@
 from app.domain.entities.base import Base
-from app.domain.entities.booking import Booking
+from app.domain.entities.booking import Booking, BookingStatus
 from app.domain.entities.city import City
 from app.domain.entities.discipline import Discipline
 from app.domain.entities.student import Student
@@ -12,6 +12,7 @@ from app.domain.entities.user_account import UserAccount, UserRole
 __all__ = [
 	"Base",
 	"Booking",
+	"BookingStatus",
 	"City",
 	"Discipline",
 	"Student",
