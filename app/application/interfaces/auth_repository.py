@@ -51,3 +51,7 @@ class AuthRepositoryInterface(ABC):
         teacher_id: int | None = None,
     ) -> UserAccount:
         raise NotImplementedError
+
+    @abstractmethod
+    async def save_changes(self) -> None:
+        raise NotImplementedError

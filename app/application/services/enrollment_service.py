@@ -18,6 +18,7 @@ from app.application.interfaces.enrollment_repository import (
     BookingProjection,
     DisciplineAnalyticsProjection,
     EnrollmentRepositoryInterface,
+    TeacherRatingSummary,
     TeacherSlotBookingProjection,
     TeacherAnalyticsProjection,
     TeacherSlotProjection,
@@ -25,6 +26,7 @@ from app.application.interfaces.enrollment_repository import (
 from app.domain.entities.booking import Booking, BookingStatus
 from app.domain.entities.city import City
 from app.domain.entities.discipline import Discipline
+from app.domain.entities.review import Review
 from app.domain.entities.student import Student
 from app.domain.entities.teacher import Teacher
 from app.domain.entities.teacher_slot import TeacherSlot
@@ -118,6 +120,18 @@ class StudentTimeConflictError(EnrollmentError):
         super().__init__("Student already has another active booking in this time range.")
 
 
+class ReviewNotAllowedError(EnrollmentError):
+    def __init__(self) -> None:
+        super().__init__("Review can be left only after a completed lesson with this teacher.")
+
+
+class ReviewAlreadyExistsError(EnrollmentError):
+    def __init__(self, teacher_id: int, student_id: int) -> None:
+        super().__init__(
+            f"Review for teacher {teacher_id} by student {student_id} already exists.",
+        )
+
+
 class AnalyticsFilterRangeError(EnrollmentError):
     def __init__(self) -> None:
         super().__init__("Analytics filter ends_to must be later than starts_from.")
@@ -163,6 +177,7 @@ class EnrollmentService:
         self,
         city_id: int | None = None,
         discipline_id: int | None = None,
+        search_query: str | None = None,
         skip: int = 0,
         limit: int = 50,
     ) -> list[Teacher]:
@@ -176,12 +191,25 @@ class EnrollmentService:
             if discipline is None:
                 raise DisciplineNotFoundError(discipline_id)
 
+        normalized_search_query = (
+            search_query.strip() if search_query is not None else None
+        )
+        if normalized_search_query == "":
+            normalized_search_query = None
+
         return await self._repository.list_teachers(
             city_id=city_id,
             discipline_id=discipline_id,
+            search_query=normalized_search_query,
             skip=skip,
             limit=limit,
         )
+
+    async def get_teacher_rating_summaries(
+        self,
+        teacher_ids: list[int],
+    ) -> dict[int, TeacherRatingSummary]:
+        return await self._repository.get_teacher_rating_summaries(teacher_ids)
 
     async def create_student(self, student_in: StudentCreateDTO) -> Student:
         city = await self._repository.get_city_by_id(student_in.city_id)
@@ -497,6 +525,43 @@ class EnrollmentService:
             )
 
         await self._repository.update_booking_status(booking, BookingStatus.CANCELLED)
+
+    async def create_review(
+        self,
+        *,
+        teacher_id: int,
+        student_id: int,
+        rating: int,
+        comment: str | None,
+    ) -> Review:
+        teacher = await self._repository.get_teacher_by_id(teacher_id)
+        if teacher is None:
+            raise TeacherNotFoundError(teacher_id)
+
+        student = await self._repository.get_student_by_id(student_id)
+        if student is None:
+            raise StudentNotFoundError(student_id)
+
+        has_completed_booking = await self._repository.has_completed_booking_with_teacher(
+            student_id=student_id,
+            teacher_id=teacher_id,
+        )
+        if not has_completed_booking:
+            raise ReviewNotAllowedError
+
+        existing_review = await self._repository.get_review_by_teacher_student(
+            teacher_id=teacher_id,
+            student_id=student_id,
+        )
+        if existing_review is not None:
+            raise ReviewAlreadyExistsError(teacher_id=teacher_id, student_id=student_id)
+
+        return await self._repository.create_review(
+            teacher_id=teacher_id,
+            student_id=student_id,
+            rating=rating,
+            comment=comment,
+        )
 
     async def cancel_booking_for_teacher(
         self,

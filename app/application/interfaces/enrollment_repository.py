@@ -13,6 +13,7 @@ from app.application.dto.enrollment_dto import (
 from app.domain.entities.booking import Booking, BookingStatus
 from app.domain.entities.city import City
 from app.domain.entities.discipline import Discipline
+from app.domain.entities.review import Review
 from app.domain.entities.student import Student
 from app.domain.entities.teacher import Teacher
 from app.domain.entities.teacher_slot import TeacherSlot
@@ -49,6 +50,7 @@ class BookingProjection:
     starts_at: datetime
     ends_at: datetime
     status: BookingStatus
+    has_review: bool
     created_at: datetime
 
 
@@ -116,6 +118,13 @@ class DisciplineAnalyticsProjection:
     utilization_rate_percent: float
 
 
+@dataclass(frozen=True)
+class TeacherRatingSummary:
+    teacher_id: int
+    average_rating: float
+    reviews_count: int
+
+
 class EnrollmentRepositoryInterface(ABC):
     @abstractmethod
     async def create_city(self, city_in: CityCreateDTO) -> City:
@@ -150,9 +159,17 @@ class EnrollmentRepositoryInterface(ABC):
         self,
         city_id: int | None = None,
         discipline_id: int | None = None,
+        search_query: str | None = None,
         skip: int = 0,
         limit: int = 50,
     ) -> list[Teacher]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_teacher_rating_summaries(
+        self,
+        teacher_ids: list[int],
+    ) -> dict[int, TeacherRatingSummary]:
         raise NotImplementedError
 
     @abstractmethod
@@ -286,6 +303,25 @@ class EnrollmentRepositoryInterface(ABC):
 
     @abstractmethod
     async def get_booking_by_id(self, booking_id: int) -> Booking | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def has_completed_booking_with_teacher(self, student_id: int, teacher_id: int) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_review_by_teacher_student(self, teacher_id: int, student_id: int) -> Review | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def create_review(
+        self,
+        *,
+        teacher_id: int,
+        student_id: int,
+        rating: int,
+        comment: str | None,
+    ) -> Review:
         raise NotImplementedError
 
     @abstractmethod

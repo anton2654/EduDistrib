@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.application.dto.auth_dto import (
     AccountReadDTO,
+    AccountUpdateDTO,
     AdminBootstrapDTO,
     LoginDTO,
     StudentRegisterDTO,
@@ -13,6 +14,8 @@ from app.application.dto.auth_dto import (
 from app.application.services.auth_service import (
     AuthService,
     BootstrapAlreadyCompletedError,
+    CityUpdateNotAllowedError,
+    CurrentPasswordInvalidError,
     CityNotFoundForAuthError,
     EmailAlreadyExistsError,
     InvalidCredentialsError,
@@ -34,12 +37,36 @@ AdminUserDependency = Annotated[
 
 
 def _to_account_read(user: UserAccount) -> AccountReadDTO:
+    full_name: str | None = None
+    email: str | None = None
+    city_id: int | None = None
+    city_name: str | None = None
+
+    loaded_student = user.__dict__.get("student")
+    loaded_teacher = user.__dict__.get("teacher")
+
+    if loaded_student is not None:
+        full_name = loaded_student.full_name
+        email = loaded_student.email
+        city_id = loaded_student.city_id
+        city = loaded_student.__dict__.get("city")
+        city_name = city.name if city is not None else None
+    elif loaded_teacher is not None:
+        full_name = loaded_teacher.full_name
+        city_id = loaded_teacher.city_id
+        city = loaded_teacher.__dict__.get("city")
+        city_name = city.name if city is not None else None
+
     return AccountReadDTO(
         user_id=user.id,
         username=user.username,
         role=user.role,
         student_id=user.student_id,
         teacher_id=user.teacher_id,
+        full_name=full_name,
+        email=email,
+        city_id=city_id,
+        city_name=city_name,
         created_at=user.created_at,
     )
 
@@ -106,6 +133,22 @@ async def login(
 @router.get("/me", response_model=AccountReadDTO)
 async def me(current_user: CurrentUserDependency) -> AccountReadDTO:
     return _to_account_read(current_user)
+
+
+@router.patch("/me", response_model=AccountReadDTO)
+async def update_me(
+    account_in: AccountUpdateDTO,
+    service: AuthServiceDependency,
+    current_user: CurrentUserDependency,
+) -> AccountReadDTO:
+    try:
+        return await service.update_current_account(current_user, account_in)
+    except CurrentPasswordInvalidError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)) from error
+    except CityNotFoundForAuthError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except CityUpdateNotAllowedError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
 
 @router.get("/accounts", response_model=list[AccountReadDTO])

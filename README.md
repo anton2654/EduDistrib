@@ -62,6 +62,7 @@ Base prefix: `/api/v1/auth`
 - `POST /register/teacher` - create teacher account (admin only)
 - `POST /login` - login and receive bearer token
 - `GET /me` - current authenticated account
+- `PATCH /me` - update current account settings (password and city for student/teacher)
 - `GET /accounts?skip=&limit=` - list accounts with pagination (admin only)
 
 ### Enrollment
@@ -73,7 +74,7 @@ Base prefix: `/api/v1/enrollment`
 - `POST /disciplines` - create discipline (admin only)
 - `GET /disciplines` - list disciplines
 - `POST /teachers` - create teacher and assign disciplines (admin only)
-- `GET /teachers?city_id=&discipline_id=&skip=&limit=` - filter teachers with pagination
+- `GET /teachers?city_id=&discipline_id=&search_query=&skip=&limit=` - filter teachers with pagination and name search
 - `POST /students` - create student profile (admin only)
 - `GET /students?city_id=&email=` - list students and find profile by email (admin only)
 - `POST /slots` - create teacher slot for discipline (admin only)
@@ -81,6 +82,7 @@ Base prefix: `/api/v1/enrollment`
 - `POST /bookings` - book slot (student/admin; student is limited to own profile)
 - `GET /bookings?student_id=&status=&skip=&limit=` - list bookings (student/admin; student sees only own) with status history
 - `DELETE /bookings/{booking_id}` - cancel booking by status transition to `cancelled` (soft lifecycle)
+- `POST /reviews` - create student review for teacher after completed lesson
 
 ### Admin Analytics
 

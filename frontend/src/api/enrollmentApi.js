@@ -108,12 +108,19 @@ export async function listDisciplines() {
   return request(ENROLLMENT_BASE_URL, "/disciplines");
 }
 
-export async function listTeachers({ cityId, disciplineId, skip, limit } = {}) {
+export async function listTeachers({
+  cityId,
+  disciplineId,
+  searchQuery,
+  skip,
+  limit,
+} = {}) {
   return request(
     ENROLLMENT_BASE_URL,
     `/teachers${toQuery({
       city_id: cityId,
       discipline_id: disciplineId,
+      search_query: searchQuery,
       skip,
       limit,
     })}`,
@@ -285,6 +292,28 @@ export async function getCurrentAccount() {
   return request(AUTH_BASE_URL, "/me");
 }
 
+export async function updateCurrentAccount({
+  currentPassword,
+  newPassword,
+  cityId,
+} = {}) {
+  const body = {};
+  if (currentPassword !== undefined) {
+    body.current_password = currentPassword;
+  }
+  if (newPassword !== undefined) {
+    body.new_password = newPassword;
+  }
+  if (cityId !== undefined && cityId !== null && `${cityId}`.trim() !== "") {
+    body.city_id = Number(cityId);
+  }
+
+  return request(AUTH_BASE_URL, "/me", {
+    method: "PATCH",
+    body,
+  });
+}
+
 export async function listAccounts({ skip, limit } = {}) {
   return request(AUTH_BASE_URL, `/accounts${toQuery({ skip, limit })}`);
 }
@@ -301,6 +330,17 @@ export async function listTeacherSlotBookings(
     TEACHER_BASE_URL,
     `/slots/${slotId}/bookings${toQuery({ status, skip, limit })}`,
   );
+}
+
+export async function createReview({ teacherId, rating, comment }) {
+  return request(ENROLLMENT_BASE_URL, "/reviews", {
+    method: "POST",
+    body: {
+      teacher_id: Number(teacherId),
+      rating: Number(rating),
+      comment,
+    },
+  });
 }
 
 export async function cancelTeacherSlotBooking(slotId, bookingId) {

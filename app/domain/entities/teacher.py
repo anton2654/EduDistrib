@@ -22,4 +22,8 @@ class Teacher(Base):
         back_populates="teacher",
         cascade="all, delete-orphan",
     )
+    reviews: Mapped[list["Review"]] = relationship(
+        back_populates="teacher",
+        cascade="all, delete-orphan",
+    )
     account: Mapped["UserAccount | None"] = relationship(back_populates="teacher")

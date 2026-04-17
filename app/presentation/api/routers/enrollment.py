@@ -14,6 +14,8 @@ from app.application.dto.enrollment_dto import (
     DisciplineAnalyticsReadDTO,
     DisciplineCreateDTO,
     DisciplineReadDTO,
+    ReviewCreateDTO,
+    ReviewReadDTO,
     StudentCreateDTO,
     StudentReadDTO,
     TeacherAnalyticsReadDTO,
@@ -27,10 +29,13 @@ from app.application.interfaces.enrollment_repository import (
     AvailableSlotProjection,
     BookingProjection,
     DisciplineAnalyticsProjection,
+    TeacherRatingSummary,
     TeacherAnalyticsProjection,
 )
 from app.application.services.enrollment_service import (
     AnalyticsFilterRangeError,
+    ReviewAlreadyExistsError,
+    ReviewNotAllowedError,
     BookingStatusTransitionError,
     BookingOwnershipError,
     BookingNotFoundError,
@@ -57,14 +62,20 @@ router = APIRouter(prefix="/enrollment", tags=["enrollment"])
 EnrollmentServiceDependency = Annotated[EnrollmentService, Depends(get_enrollment_service)]
 AdminUserDependency = Annotated[UserAccount, Depends(require_roles(UserRole.ADMIN))]
 StudentUserDependency = Annotated[UserAccount, Depends(get_student_user)]
+StudentOnlyUserDependency = Annotated[UserAccount, Depends(require_roles(UserRole.STUDENT))]
 
 
-def _teacher_to_dto(teacher: Teacher) -> TeacherReadDTO:
+def _teacher_to_dto(
+    teacher: Teacher,
+    rating_summary: TeacherRatingSummary | None = None,
+) -> TeacherReadDTO:
     return TeacherReadDTO(
         id=teacher.id,
         full_name=teacher.full_name,
         city_id=teacher.city_id,
         discipline_ids=sorted(link.discipline_id for link in teacher.discipline_links),
+        average_rating=rating_summary.average_rating if rating_summary is not None else None,
+        reviews_count=rating_summary.reviews_count if rating_summary is not None else 0,
     )
 
 
@@ -102,8 +113,13 @@ def _booking_to_dto(booking: BookingProjection) -> BookingDetailsReadDTO:
         starts_at=booking.starts_at,
         ends_at=booking.ends_at,
         status=booking.status,
+        has_review=booking.has_review,
         created_at=booking.created_at,
     )
+
+
+def _review_to_dto(review) -> ReviewReadDTO:
+    return ReviewReadDTO.model_validate(review)
 
 
 def _overview_to_dto(overview: AnalyticsOverviewProjection) -> AnalyticsOverviewReadDTO:
@@ -200,6 +216,7 @@ async def list_teachers(
     service: EnrollmentServiceDependency,
     city_id: int | None = Query(default=None, gt=0),
     discipline_id: int | None = Query(default=None, gt=0),
+    search_query: str | None = Query(default=None, min_length=1, max_length=255),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[TeacherReadDTO]:
@@ -207,13 +224,15 @@ async def list_teachers(
         teachers = await service.list_teachers(
             city_id=city_id,
             discipline_id=discipline_id,
+            search_query=search_query,
             skip=skip,
             limit=limit,
         )
     except (CityNotFoundError, DisciplineNotFoundError) as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
-    return [_teacher_to_dto(teacher) for teacher in teachers]
+    ratings = await service.get_teacher_rating_summaries([teacher.id for teacher in teachers])
+    return [_teacher_to_dto(teacher, ratings.get(teacher.id)) for teacher in teachers]
 
 
 @router.post("/students", response_model=StudentReadDTO, status_code=status.HTTP_201_CREATED)
@@ -445,3 +464,30 @@ async def cancel_booking(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/reviews", response_model=ReviewReadDTO, status_code=status.HTTP_201_CREATED)
+async def create_review(
+    review_in: ReviewCreateDTO,
+    service: EnrollmentServiceDependency,
+    current_user: StudentOnlyUserDependency,
+) -> ReviewReadDTO:
+    if current_user.student_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Student account is not linked to student profile.",
+        )
+
+    try:
+        review = await service.create_review(
+            teacher_id=review_in.teacher_id,
+            student_id=current_user.student_id,
+            rating=review_in.rating,
+            comment=review_in.comment,
+        )
+    except (TeacherNotFoundError, StudentNotFoundError) as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (ReviewNotAllowedError, ReviewAlreadyExistsError) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    return _review_to_dto(review)

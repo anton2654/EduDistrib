@@ -1,5 +1,6 @@
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.application.dto.auth_dto import StudentRegisterDTO
 from app.application.interfaces.auth_repository import AuthRepositoryInterface
@@ -14,7 +15,16 @@ class AuthRepository(AuthRepositoryInterface):
         self._session = session
 
     async def get_user_by_id(self, user_id: int) -> UserAccount | None:
-        return await self._session.get(UserAccount, user_id)
+        stmt = (
+            select(UserAccount)
+            .where(UserAccount.id == user_id)
+            .options(
+                selectinload(UserAccount.student).selectinload(Student.city),
+                selectinload(UserAccount.teacher).selectinload(Teacher.city),
+            )
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def get_user_by_username(self, username: str) -> UserAccount | None:
         stmt = select(UserAccount).where(UserAccount.username == username)
@@ -77,3 +87,6 @@ class AuthRepository(AuthRepositoryInterface):
         await self._session.commit()
         await self._session.refresh(account)
         return account
+
+    async def save_changes(self) -> None:
+        await self._session.commit()

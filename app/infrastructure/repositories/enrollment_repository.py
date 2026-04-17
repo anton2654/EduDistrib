@@ -18,6 +18,7 @@ from app.application.interfaces.enrollment_repository import (
     BookingProjection,
     DisciplineAnalyticsProjection,
     EnrollmentRepositoryInterface,
+    TeacherRatingSummary,
     TeacherSlotBookingProjection,
     TeacherAnalyticsProjection,
     TeacherSlotProjection,
@@ -25,6 +26,7 @@ from app.application.interfaces.enrollment_repository import (
 from app.domain.entities.booking import Booking, BookingStatus
 from app.domain.entities.city import City
 from app.domain.entities.discipline import Discipline
+from app.domain.entities.review import Review
 from app.domain.entities.student import Student
 from app.domain.entities.teacher import Teacher
 from app.domain.entities.teacher_discipline import TeacherDiscipline
@@ -114,6 +116,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
         self,
         city_id: int | None = None,
         discipline_id: int | None = None,
+        search_query: str | None = None,
         skip: int = 0,
         limit: int = 50,
     ) -> list[Teacher]:
@@ -131,10 +134,40 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 TeacherDiscipline.discipline_id == discipline_id,
             )
 
+        if search_query is not None:
+            stmt = stmt.where(Teacher.full_name.ilike(f"%{search_query}%"))
+
         stmt = stmt.offset(skip).limit(limit)
 
         result = await self._session.execute(stmt)
         return list(result.unique().scalars().all())
+
+    async def get_teacher_rating_summaries(
+        self,
+        teacher_ids: list[int],
+    ) -> dict[int, TeacherRatingSummary]:
+        if not teacher_ids:
+            return {}
+
+        stmt = (
+            select(
+                Review.teacher_id,
+                func.avg(Review.rating).label("average_rating"),
+                func.count(Review.id).label("reviews_count"),
+            )
+            .where(Review.teacher_id.in_(teacher_ids))
+            .group_by(Review.teacher_id)
+        )
+        rows = (await self._session.execute(stmt)).mappings().all()
+
+        return {
+            row["teacher_id"]: TeacherRatingSummary(
+                teacher_id=row["teacher_id"],
+                average_rating=round(float(row["average_rating"]), 2),
+                reviews_count=int(row["reviews_count"] or 0),
+            )
+            for row in rows
+        }
 
     async def get_teacher_by_id(self, teacher_id: int) -> Teacher | None:
         stmt = (
@@ -666,6 +699,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 TeacherSlot.starts_at,
                 TeacherSlot.ends_at,
                 Booking.status,
+                case((Review.id.is_not(None), True), else_=False).label("has_review"),
                 Booking.created_at,
             )
             .join(Student, Student.id == Booking.student_id)
@@ -673,6 +707,13 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
             .join(Teacher, Teacher.id == TeacherSlot.teacher_id)
             .join(City, City.id == Teacher.city_id)
             .join(Discipline, Discipline.id == TeacherSlot.discipline_id)
+            .outerjoin(
+                Review,
+                and_(
+                    Review.teacher_id == Teacher.id,
+                    Review.student_id == Student.id,
+                ),
+            )
             .order_by(TeacherSlot.starts_at, Booking.id)
         )
 
@@ -702,6 +743,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 starts_at=row["starts_at"],
                 ends_at=row["ends_at"],
                 status=row["status"],
+                has_review=bool(row["has_review"]),
                 created_at=row["created_at"],
             )
             for row in rows
@@ -748,6 +790,47 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
 
     async def get_booking_by_id(self, booking_id: int) -> Booking | None:
         return await self._session.get(Booking, booking_id)
+
+    async def has_completed_booking_with_teacher(self, student_id: int, teacher_id: int) -> bool:
+        stmt = (
+            select(Booking.id)
+            .join(TeacherSlot, TeacherSlot.id == Booking.slot_id)
+            .where(
+                Booking.student_id == student_id,
+                TeacherSlot.teacher_id == teacher_id,
+                Booking.status == BookingStatus.COMPLETED,
+            )
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
+    async def get_review_by_teacher_student(self, teacher_id: int, student_id: int) -> Review | None:
+        stmt = select(Review).where(
+            Review.teacher_id == teacher_id,
+            Review.student_id == student_id,
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def create_review(
+        self,
+        *,
+        teacher_id: int,
+        student_id: int,
+        rating: int,
+        comment: str | None,
+    ) -> Review:
+        review = Review(
+            teacher_id=teacher_id,
+            student_id=student_id,
+            rating=rating,
+            comment=comment,
+        )
+        self._session.add(review)
+        await self._session.commit()
+        await self._session.refresh(review)
+        return review
 
     async def update_booking_status(self, booking: Booking, status: BookingStatus) -> Booking:
         booking.status = status

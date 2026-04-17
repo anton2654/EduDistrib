@@ -412,3 +412,157 @@ async def test_student_cannot_book_overlapping_slots() -> None:
         )
 
     assert second_booking_response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_teacher_list_supports_search_query_filter() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get("/api/v1/enrollment/teachers?search_query=ivan")
+
+    assert response.status_code == 200
+    rows = response.json()
+    assert isinstance(rows, list)
+    for row in rows:
+        assert "ivan" in row["full_name"].lower()
+
+
+@pytest.mark.asyncio
+async def test_student_can_leave_review_only_after_completed_booking() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        teacher_headers = await _ensure_teacher_headers(client)
+        if teacher_headers is None:
+            pytest.skip("Seeded teacher account is required for this test.")
+
+        teacher_slots_response = await client.get(
+            "/api/v1/teacher/slots/",
+            headers=teacher_headers,
+        )
+        assert teacher_slots_response.status_code == 200
+        teacher_slots = teacher_slots_response.json()
+
+        target_slot = next(
+            (
+                slot
+                for slot in teacher_slots
+                if slot["is_active"] and slot["available_seats"] > 0
+            ),
+            None,
+        )
+        if target_slot is None:
+            pytest.skip("Teacher has no active slot with available seats.")
+
+        student_payload, student_headers = await _register_student(client)
+
+        create_booking_response = await client.post(
+            "/api/v1/enrollment/bookings",
+            headers=student_headers,
+            json={
+                "student_id": student_payload["student_id"],
+                "slot_id": target_slot["slot_id"],
+            },
+        )
+        if create_booking_response.status_code != 201:
+            pytest.skip("Could not create booking for review flow test.")
+
+        booking_id = create_booking_response.json()["id"]
+
+        review_before_complete = await client.post(
+            "/api/v1/enrollment/reviews",
+            headers=student_headers,
+            json={
+                "teacher_id": target_slot["teacher_id"],
+                "rating": 5,
+                "comment": "Great lesson",
+            },
+        )
+        assert review_before_complete.status_code == 409
+
+        complete_response = await client.post(
+            f"/api/v1/teacher/slots/{target_slot['slot_id']}/bookings/{booking_id}/complete",
+            headers=teacher_headers,
+        )
+        assert complete_response.status_code == 200
+
+        review_after_complete = await client.post(
+            "/api/v1/enrollment/reviews",
+            headers=student_headers,
+            json={
+                "teacher_id": target_slot["teacher_id"],
+                "rating": 5,
+                "comment": "Great lesson",
+            },
+        )
+        assert review_after_complete.status_code == 201
+        assert review_after_complete.json()["rating"] == 5
+
+        duplicate_review_response = await client.post(
+            "/api/v1/enrollment/reviews",
+            headers=student_headers,
+            json={
+                "teacher_id": target_slot["teacher_id"],
+                "rating": 4,
+                "comment": "Second review",
+            },
+        )
+        assert duplicate_review_response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_student_can_update_own_profile_password_and_city() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        suffix = uuid4().hex[:8]
+
+        cities_response = await client.get("/api/v1/enrollment/cities")
+        assert cities_response.status_code == 200
+        cities = cities_response.json()
+        if len(cities) < 2:
+            pytest.skip("At least two cities are required for profile city update test.")
+
+        initial_city_id = cities[0]["id"]
+        updated_city_id = cities[1]["id"]
+        initial_password = "student123"
+        new_password = "student456"
+        username = f"student_profile_{suffix}"
+
+        register_response = await client.post(
+            "/api/v1/auth/register/student",
+            json={
+                "username": username,
+                "password": initial_password,
+                "full_name": f"Profile Student {suffix}",
+                "email": f"student-profile-{suffix}@example.com",
+                "city_id": initial_city_id,
+            },
+        )
+        assert register_response.status_code == 201
+
+        token = register_response.json()["access_token"]
+        student_headers = {"Authorization": f"Bearer {token}"}
+
+        update_response = await client.patch(
+            "/api/v1/auth/me",
+            headers=student_headers,
+            json={
+                "city_id": updated_city_id,
+                "current_password": initial_password,
+                "new_password": new_password,
+            },
+        )
+        assert update_response.status_code == 200
+        assert update_response.json()["city_id"] == updated_city_id
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": username, "password": new_password},
+        )
+
+    assert login_response.status_code == 200

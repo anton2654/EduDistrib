@@ -423,12 +423,137 @@ h3 {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+  position: relative;
+  z-index: 50;
+  overflow: visible;
 }
 
 .auth-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+
+.top-nav-main {
+  min-width: 0;
+}
+
+.top-nav-menu-wrap {
+  position: relative;
+  align-self: flex-start;
+  z-index: 55;
+}
+
+.avatar-button {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid #9cc5e4;
+  background: linear-gradient(145deg, #0d5f7d, #0d7490);
+  color: #f7fcff;
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  padding: 0;
+}
+
+.user-menu-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  min-width: 190px;
+  background: #fff;
+  border: 1px solid #c8dcef;
+  border-radius: 12px;
+  box-shadow: 0 18px 32px rgba(16, 42, 67, 0.18);
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+  z-index: 300;
+}
+
+.user-menu-dropdown button {
+  width: 100%;
+  text-align: left;
+}
+
+button.ghost.is-active {
+  border-color: #4da6c2;
+  background: #dff1f8;
+  color: #0f4c61;
+}
+
+.profile-actions-row {
+  margin-top: 14px;
+}
+
+.booking-tabs-row {
+  margin: 12px 0;
+}
+
+.review-form {
+  margin-top: 10px;
+  border-top: 1px dashed #c8dceb;
+  padding-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.review-done-text {
+  margin-top: 6px;
+  color: #1f5f3a;
+  font-weight: 600;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(9, 26, 40, 0.5);
+  backdrop-filter: blur(2px);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  z-index: 60;
+}
+
+.modal-card {
+  width: min(980px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  background: #ffffff;
+  border: 1px solid #c8dcef;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 22px 44px rgba(16, 42, 67, 0.3);
+}
+
+.modal-summary-grid {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 14px;
+}
+
+.table-wrap {
+  overflow: auto;
+}
+
+.slot-bookings-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+}
+
+.slot-bookings-table th,
+.slot-bookings-table td {
+  border: 1px solid #d6e3ef;
+  padding: 8px;
+  text-align: left;
+}
+
+.slot-bookings-table th {
+  background: #eef7ff;
+  color: #19425d;
+  font-weight: 700;
 }
 
 .meta-line {
@@ -543,5 +668,13 @@ button.danger:hover {
   .top-nav {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .top-nav-menu-wrap {
+    align-self: flex-end;
+  }
+
+  .auth-grid {
+    grid-template-columns: 1fr;
   }
 }

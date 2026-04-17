@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelTeacherSlotBooking,
   cancelBooking,
   clearAccessToken,
   completeTeacherSlotBooking,
+  createReview,
   createBooking,
   createTeacherAccount,
   createTeacherSlot,
@@ -24,6 +25,7 @@ import {
   login,
   registerStudentAccount,
   setAccessToken,
+  updateCurrentAccount,
   updateTeacherSlot,
 } from "./api/enrollmentApi";
 import {
@@ -34,7 +36,7 @@ import {
 import "./App.css";
 
 const TOKEN_STORAGE_KEY = "distributor_access_token";
-const ADMIN_ACCOUNTS_PAGE_SIZE = 10;
+const ADMIN_ACCOUNTS_PAGE_SIZE = 5;
 
 const EMPTY_LOGIN = {
   username: "",
@@ -52,7 +54,19 @@ const EMPTY_STUDENT_REG = {
 const EMPTY_STUDENT_FILTERS = {
   cityId: "",
   disciplineId: "",
+  teacherSearch: "",
   teacherId: "",
+};
+
+const EMPTY_PROFILE_UPDATE_DRAFT = {
+  cityId: "",
+  currentPassword: "",
+  newPassword: "",
+};
+
+const EMPTY_REVIEW_DRAFT = {
+  rating: "5",
+  comment: "",
 };
 
 const EMPTY_TEACHER_SLOT = {
@@ -78,6 +92,14 @@ const EMPTY_ADMIN_ANALYTICS_FILTERS = {
 };
 
 function App() {
+  const userMenuWrapRef = useRef(null);
+
+  const [currentPath, setCurrentPath] = useState(() =>
+    typeof window !== "undefined" ? window.location.pathname || "/" : "/",
+  );
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [profileFocusSection, setProfileFocusSection] = useState("profile");
+
   const [cities, setCities] = useState([]);
   const [disciplines, setDisciplines] = useState([]);
   const [teachers, setTeachers] = useState([]);
@@ -110,6 +132,13 @@ function App() {
   const [disciplineAnalyticsRows, setDisciplineAnalyticsRows] = useState([]);
   const [adminAccountsSkip, setAdminAccountsSkip] = useState(0);
   const [hasMoreAdminAccounts, setHasMoreAdminAccounts] = useState(false);
+  const [profileUpdateDraft, setProfileUpdateDraft] = useState(
+    EMPTY_PROFILE_UPDATE_DRAFT,
+  );
+
+  const [studentBookingTab, setStudentBookingTab] = useState("upcoming");
+  const [reviewEditorBookingId, setReviewEditorBookingId] = useState(null);
+  const [reviewDraftByBookingId, setReviewDraftByBookingId] = useState({});
 
   const [currentAccount, setCurrentAccount] = useState(null);
 
@@ -130,11 +159,16 @@ function App() {
   const [slotActionInProgressId, setSlotActionInProgressId] = useState(null);
   const [isAdminAccountsLoading, setIsAdminAccountsLoading] = useState(false);
   const [isAdminAnalyticsLoading, setIsAdminAnalyticsLoading] = useState(false);
+  const [isProfileSubmitting, setIsProfileSubmitting] = useState(false);
+  const [reviewSubmittingBookingId, setReviewSubmittingBookingId] =
+    useState(null);
 
   const [notice, setNotice] = useState({ kind: "info", text: "" });
 
   const role = currentAccount?.role ?? null;
   const studentId = currentAccount?.student_id ?? null;
+  const isProfilePage = currentPath === "/profile";
+  const canEditProfileCity = role === "student" || role === "teacher";
 
   const activeStudentBookingSlotIds = useMemo(
     () =>
@@ -204,6 +238,63 @@ function App() {
     overviewAnalytics,
   ]);
 
+  const upcomingBookings = useMemo(
+    () =>
+      bookings.filter((booking) => (booking.status ?? "active") === "active"),
+    [bookings],
+  );
+  const historyBookings = useMemo(
+    () =>
+      bookings.filter((booking) => (booking.status ?? "active") !== "active"),
+    [bookings],
+  );
+  const shownBookings =
+    studentBookingTab === "upcoming" ? upcomingBookings : historyBookings;
+
+  const userDisplayName =
+    currentAccount?.full_name || currentAccount?.username || "U";
+  const userInitials = useMemo(() => {
+    const parts = userDisplayName
+      .split(" ")
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    if (parts.length === 0) {
+      return "U";
+    }
+    if (parts.length === 1) {
+      return parts[0].slice(0, 2).toUpperCase();
+    }
+    return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
+  }, [userDisplayName]);
+
+  const expandedTeacherSlot = useMemo(
+    () =>
+      expandedTeacherSlotId != null
+        ? teacherSlots.find((slot) => slot.slot_id === expandedTeacherSlotId) ||
+          null
+        : null,
+    [expandedTeacherSlotId, teacherSlots],
+  );
+
+  const expandedTeacherSlotBookings = useMemo(
+    () =>
+      expandedTeacherSlotId != null
+        ? (teacherSlotBookingsBySlotId[expandedTeacherSlotId] ?? [])
+        : [],
+    [expandedTeacherSlotId, teacherSlotBookingsBySlotId],
+  );
+
+  const teacherRatingById = useMemo(
+    () =>
+      new Map(
+        teachers
+          .filter((teacher) => teacher.average_rating != null)
+          .map((teacher) => [teacher.id, teacher.average_rating]),
+      ),
+    [teachers],
+  );
+
   async function loadAdminAccountsPage(skipValue) {
     const loadedAccounts = await listAccounts({
       skip: skipValue,
@@ -213,6 +304,95 @@ function App() {
     setHasMoreAdminAccounts(loadedAccounts.length > ADMIN_ACCOUNTS_PAGE_SIZE);
     setAccounts(loadedAccounts.slice(0, ADMIN_ACCOUNTS_PAGE_SIZE));
   }
+
+  function navigateTo(path, focusSection = "profile") {
+    if (typeof window !== "undefined" && window.location.pathname !== path) {
+      window.history.pushState({}, "", path);
+    }
+    setCurrentPath(path);
+    setProfileFocusSection(focusSection);
+    setIsUserMenuOpen(false);
+  }
+
+  useEffect(() => {
+    function handlePopState() {
+      setCurrentPath(window.location.pathname || "/");
+      setIsUserMenuOpen(false);
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isUserMenuOpen) {
+      return;
+    }
+
+    function handlePointerDown(event) {
+      if (
+        userMenuWrapRef.current &&
+        !userMenuWrapRef.current.contains(event.target)
+      ) {
+        setIsUserMenuOpen(false);
+      }
+    }
+
+    function handleEscape(event) {
+      if (event.key === "Escape") {
+        setIsUserMenuOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [isUserMenuOpen]);
+
+  useEffect(() => {
+    const hasStoredToken = Boolean(localStorage.getItem(TOKEN_STORAGE_KEY));
+    if (
+      !currentAccount &&
+      !isSessionLoading &&
+      !hasStoredToken &&
+      currentPath === "/profile"
+    ) {
+      if (typeof window !== "undefined") {
+        window.history.replaceState({}, "", "/");
+      }
+      setCurrentPath("/");
+    }
+  }, [currentAccount, currentPath, isSessionLoading]);
+
+  useEffect(() => {
+    if (!currentAccount) {
+      setProfileUpdateDraft(EMPTY_PROFILE_UPDATE_DRAFT);
+      return;
+    }
+
+    setProfileUpdateDraft((previous) => ({
+      ...previous,
+      cityId:
+        currentAccount.city_id != null ? String(currentAccount.city_id) : "",
+      currentPassword: "",
+      newPassword: "",
+    }));
+  }, [currentAccount]);
+
+  useEffect(() => {
+    if (!isProfilePage || profileFocusSection !== "settings") {
+      return;
+    }
+
+    const settingsCard = document.getElementById("profile-settings-card");
+    settingsCard?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [isProfilePage, profileFocusSection]);
 
   useEffect(() => {
     async function loadCatalog() {
@@ -286,6 +466,7 @@ function App() {
         const loadedTeachers = await listTeachers({
           cityId: studentFilters.cityId || undefined,
           disciplineId: studentFilters.disciplineId || undefined,
+          searchQuery: studentFilters.teacherSearch || undefined,
         });
 
         setTeachers(loadedTeachers);
@@ -311,6 +492,7 @@ function App() {
     role,
     studentFilters.cityId,
     studentFilters.disciplineId,
+    studentFilters.teacherSearch,
     studentFilters.teacherId,
   ]);
 
@@ -488,6 +670,10 @@ function App() {
       role: payload.role,
       student_id: payload.student_id,
       teacher_id: payload.teacher_id,
+      full_name: null,
+      email: null,
+      city_id: null,
+      city_name: null,
       created_at: null,
     });
   }
@@ -501,6 +687,14 @@ function App() {
     clearAccessToken();
     localStorage.removeItem(TOKEN_STORAGE_KEY);
     setCurrentAccount(null);
+    setIsUserMenuOpen(false);
+    setProfileUpdateDraft(EMPTY_PROFILE_UPDATE_DRAFT);
+    setReviewEditorBookingId(null);
+    setReviewDraftByBookingId({});
+    if (typeof window !== "undefined") {
+      window.history.replaceState({}, "", "/");
+    }
+    setCurrentPath("/");
     setBookings([]);
     setTeacherSlots([]);
     setTeacherSlotBookingsBySlotId({});
@@ -591,6 +785,146 @@ function App() {
 
       return { ...previous, [name]: value };
     });
+  }
+
+  function handleProfileUpdateDraftChange(event) {
+    const { name, value } = event.target;
+    setProfileUpdateDraft((previous) => ({ ...previous, [name]: value }));
+  }
+
+  async function handleProfileUpdate(event) {
+    event.preventDefault();
+
+    if (!currentAccount) {
+      return;
+    }
+
+    const currentPassword = profileUpdateDraft.currentPassword.trim();
+    const newPassword = profileUpdateDraft.newPassword.trim();
+
+    const hasOnlyOnePasswordField =
+      (currentPassword && !newPassword) || (!currentPassword && newPassword);
+
+    if (hasOnlyOnePasswordField) {
+      setNotice({
+        kind: "warning",
+        text: "Щоб змінити пароль, заповніть і поточний, і новий пароль.",
+      });
+      return;
+    }
+
+    const cityChanged =
+      canEditProfileCity &&
+      profileUpdateDraft.cityId &&
+      String(currentAccount.city_id ?? "") !==
+        String(profileUpdateDraft.cityId);
+    const wantsPasswordUpdate = Boolean(currentPassword && newPassword);
+
+    if (!cityChanged && !wantsPasswordUpdate) {
+      setNotice({
+        kind: "warning",
+        text:
+          role === "admin"
+            ? "Для admin доступна лише зміна пароля. Заповніть обидва поля пароля."
+            : "Немає змін для оновлення профілю.",
+      });
+      return;
+    }
+
+    setIsProfileSubmitting(true);
+
+    try {
+      const updatedAccount = await updateCurrentAccount({
+        cityId: cityChanged ? profileUpdateDraft.cityId : undefined,
+        currentPassword: currentPassword || undefined,
+        newPassword: newPassword || undefined,
+      });
+
+      setCurrentAccount(updatedAccount);
+      setProfileUpdateDraft({
+        cityId:
+          updatedAccount.city_id != null ? String(updatedAccount.city_id) : "",
+        currentPassword: "",
+        newPassword: "",
+      });
+
+      if (role === "student" && cityChanged) {
+        setStudentFilters((previous) => ({
+          ...previous,
+          cityId: String(updatedAccount.city_id ?? previous.cityId),
+          teacherId: "",
+        }));
+      }
+
+      setNotice({ kind: "success", text: "Профіль оновлено." });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        text: `Не вдалося оновити профіль: ${error.message}`,
+      });
+    } finally {
+      setIsProfileSubmitting(false);
+    }
+  }
+
+  function handleReviewDraftChange(bookingId, field, value) {
+    setReviewDraftByBookingId((previous) => ({
+      ...previous,
+      [bookingId]: {
+        ...(previous[bookingId] ?? EMPTY_REVIEW_DRAFT),
+        [field]: value,
+      },
+    }));
+  }
+
+  async function handleSubmitReview(booking) {
+    const reviewDraft =
+      reviewDraftByBookingId[booking.booking_id] ?? EMPTY_REVIEW_DRAFT;
+    const rating = Number(reviewDraft.rating);
+
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      setNotice({
+        kind: "warning",
+        text: "Рейтинг має бути від 1 до 5.",
+      });
+      return;
+    }
+
+    setReviewSubmittingBookingId(booking.booking_id);
+
+    try {
+      await createReview({
+        teacherId: booking.teacher_id,
+        rating,
+        comment: reviewDraft.comment?.trim() || undefined,
+      });
+
+      const [loadedBookings, loadedTeachers] = await Promise.all([
+        listBookings(),
+        listTeachers({
+          cityId: studentFilters.cityId || undefined,
+          disciplineId: studentFilters.disciplineId || undefined,
+          searchQuery: studentFilters.teacherSearch || undefined,
+        }),
+      ]);
+      setBookings(loadedBookings);
+      setTeachers(loadedTeachers);
+
+      setReviewDraftByBookingId((previous) => {
+        const updated = { ...previous };
+        delete updated[booking.booking_id];
+        return updated;
+      });
+      setReviewEditorBookingId(null);
+      setNotice({ kind: "success", text: "Відгук збережено." });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        text: `Не вдалося залишити відгук: ${error.message}`,
+      });
+    } finally {
+      setReviewSubmittingBookingId(null);
+    }
   }
 
   async function handleLogin(event) {
@@ -849,11 +1183,6 @@ function App() {
   }
 
   async function handleToggleTeacherBookings(slotId) {
-    if (expandedTeacherSlotId === slotId) {
-      setExpandedTeacherSlotId(null);
-      return;
-    }
-
     setExpandedTeacherSlotId(slotId);
     await loadTeacherSlotBookings(slotId);
   }
@@ -915,12 +1244,48 @@ function App() {
 
   async function handleCreateTeacherAccount(event) {
     event.preventDefault();
+
+    const username = teacherAccountForm.username.trim().toLowerCase();
+    const password = teacherAccountForm.password;
+
+    if (username.length < 3) {
+      setNotice({
+        kind: "warning",
+        text: "Username має містити щонайменше 3 символи.",
+      });
+      return;
+    }
+
+    if (password.length < 6) {
+      setNotice({
+        kind: "warning",
+        text: "Password має містити щонайменше 6 символів.",
+      });
+      return;
+    }
+
+    if (!teacherAccountForm.teacherId) {
+      setNotice({
+        kind: "warning",
+        text: "Оберіть профіль викладача для прив'язки акаунта.",
+      });
+      return;
+    }
+
+    if (teacherDirectory.length === 0) {
+      setNotice({
+        kind: "warning",
+        text: "Немає профілів викладачів для прив'язки акаунта.",
+      });
+      return;
+    }
+
     setIsAdminAccountsLoading(true);
 
     try {
       await createTeacherAccount({
-        username: teacherAccountForm.username.trim().toLowerCase(),
-        password: teacherAccountForm.password,
+        username,
+        password,
         teacherId: teacherAccountForm.teacherId,
       });
 
@@ -989,16 +1354,47 @@ function App() {
           className="panel reveal top-nav"
           style={{ animationDelay: "120ms" }}
         >
-          <div>
+          <div className="top-nav-main">
             <p className="meta-line">
-              Увійшли як <strong>{currentAccount.username}</strong>
+              Увійшли як <strong>{userDisplayName}</strong>
             </p>
             <p className="meta-line role-line">Роль: {currentAccount.role}</p>
           </div>
 
-          <button type="button" className="ghost" onClick={handleLogout}>
-            Вийти
-          </button>
+          <div className="top-nav-menu-wrap" ref={userMenuWrapRef}>
+            <button
+              type="button"
+              className="avatar-button"
+              aria-haspopup="menu"
+              aria-expanded={isUserMenuOpen}
+              aria-controls="user-menu-dropdown"
+              onClick={() => setIsUserMenuOpen((previous) => !previous)}
+            >
+              {userInitials}
+            </button>
+
+            {isUserMenuOpen ? (
+              <div className="user-menu-dropdown" id="user-menu-dropdown">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => navigateTo("/profile", "profile")}
+                >
+                  Мій профіль
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => navigateTo("/profile", "settings")}
+                >
+                  Налаштування
+                </button>
+                <button type="button" className="danger" onClick={handleLogout}>
+                  Вийти
+                </button>
+              </div>
+            ) : null}
+          </div>
         </section>
       ) : null}
 
@@ -1111,17 +1507,127 @@ function App() {
                 Зареєструватися як Student
               </button>
             </form>
-            <p className="hint-text">
-              Bootstrap Admin - це технічний одноразовий endpoint для порожньої
-              БД. Його прибрано з інтерфейсу користувача; використовуйте
-              `/api/v1/auth/bootstrap-admin` лише під час первинного
-              розгортання.
-            </p>
           </article>
         </section>
       ) : null}
 
-      {currentAccount?.role === "student" ? (
+      {currentAccount && isProfilePage ? (
+        <section className="two-column">
+          <article className="panel reveal" style={{ animationDelay: "180ms" }}>
+            <h2>Мій профіль</h2>
+            <p className="meta-line">Username: {currentAccount.username}</p>
+            <p className="meta-line">Роль: {currentAccount.role}</p>
+            <p className="meta-line">
+              ПІБ: {currentAccount.full_name ?? "Немає прив'язаного профілю"}
+            </p>
+            <p className="meta-line">
+              Email: {currentAccount.email ?? "Не вказано"}
+            </p>
+            <p className="meta-line">
+              Місто: {currentAccount.city_name ?? "Не вказано"}
+            </p>
+
+            <div className="inline-actions profile-actions-row">
+              <button
+                type="button"
+                className={
+                  profileFocusSection === "profile"
+                    ? "ghost is-active"
+                    : "ghost"
+                }
+                onClick={() => setProfileFocusSection("profile")}
+              >
+                Профіль
+              </button>
+              <button
+                type="button"
+                className={
+                  profileFocusSection === "settings"
+                    ? "ghost is-active"
+                    : "ghost"
+                }
+                onClick={() => setProfileFocusSection("settings")}
+              >
+                Налаштування
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => navigateTo("/")}
+              >
+                Повернутися на головну
+              </button>
+            </div>
+          </article>
+
+          <article
+            id="profile-settings-card"
+            className="panel reveal"
+            style={{ animationDelay: "240ms" }}
+          >
+            <h2>Налаштування облікового запису</h2>
+            <form className="profile-form" onSubmit={handleProfileUpdate}>
+              {canEditProfileCity ? (
+                <label>
+                  Місто
+                  <select
+                    name="cityId"
+                    value={profileUpdateDraft.cityId}
+                    onChange={handleProfileUpdateDraftChange}
+                    disabled={isProfileSubmitting}
+                  >
+                    <option value="">Оберіть місто</option>
+                    {cities.map((city) => (
+                      <option key={city.id} value={city.id}>
+                        {city.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <p className="hint-text">
+                  Для ролі admin місто не змінюється. Тут доступна лише зміна
+                  пароля.
+                </p>
+              )}
+
+              <p className="meta-line">
+                Щоб змінити пароль, заповніть обидва поля.
+              </p>
+
+              <label>
+                Поточний пароль
+                <input
+                  name="currentPassword"
+                  type="password"
+                  value={profileUpdateDraft.currentPassword}
+                  onChange={handleProfileUpdateDraftChange}
+                  placeholder="Введіть поточний пароль"
+                  autoComplete="current-password"
+                />
+              </label>
+
+              <label>
+                Новий пароль
+                <input
+                  name="newPassword"
+                  type="password"
+                  value={profileUpdateDraft.newPassword}
+                  onChange={handleProfileUpdateDraftChange}
+                  placeholder="Новий пароль (не менше 6 символів)"
+                  autoComplete="new-password"
+                />
+              </label>
+
+              <button type="submit" disabled={isProfileSubmitting}>
+                {isProfileSubmitting ? "Оновлюю..." : "Зберегти зміни"}
+              </button>
+            </form>
+          </article>
+        </section>
+      ) : null}
+
+      {currentAccount?.role === "student" && !isProfilePage ? (
         <>
           <section className="two-column">
             <article
@@ -1174,9 +1680,22 @@ function App() {
                     {teachers.map((teacher) => (
                       <option key={teacher.id} value={teacher.id}>
                         {teacher.full_name}
+                        {teacher.average_rating != null
+                          ? ` · ⭐ ${teacher.average_rating}`
+                          : ""}
                       </option>
                     ))}
                   </select>
+                </label>
+
+                <label>
+                  Пошук за ім'ям викладача
+                  <input
+                    name="teacherSearch"
+                    value={studentFilters.teacherSearch}
+                    onChange={handleStudentFilterChange}
+                    placeholder="Наприклад: Іван"
+                  />
                 </label>
               </div>
             </article>
@@ -1228,6 +1747,11 @@ function App() {
                     >
                       <p className="slot-topic">{slot.discipline_name}</p>
                       <h3>{slot.teacher_name}</h3>
+                      {teacherRatingById.has(slot.teacher_id) ? (
+                        <p className="slot-meta">
+                          ⭐ Рейтинг: {teacherRatingById.get(slot.teacher_id)}
+                        </p>
+                      ) : null}
                       <p className="slot-meta">{slot.city_name}</p>
                       <p className="slot-time">
                         {formatDateTimeRange(slot.starts_at, slot.ends_at)}
@@ -1266,15 +1790,40 @@ function App() {
               <span className="badge">
                 {isBookingsLoading
                   ? "Оновлення..."
-                  : `У списку: ${bookings.length}`}
+                  : `У списку: ${shownBookings.length}`}
               </span>
             </div>
 
-            {bookings.length === 0 && !isBookingsLoading ? (
-              <p className="empty-state">Поки що немає активних бронювань.</p>
+            <div className="inline-actions booking-tabs-row">
+              <button
+                type="button"
+                className={
+                  studentBookingTab === "upcoming" ? "ghost is-active" : "ghost"
+                }
+                onClick={() => setStudentBookingTab("upcoming")}
+              >
+                Майбутні заняття ({upcomingBookings.length})
+              </button>
+              <button
+                type="button"
+                className={
+                  studentBookingTab === "history" ? "ghost is-active" : "ghost"
+                }
+                onClick={() => setStudentBookingTab("history")}
+              >
+                Історія ({historyBookings.length})
+              </button>
+            </div>
+
+            {shownBookings.length === 0 && !isBookingsLoading ? (
+              <p className="empty-state">
+                {studentBookingTab === "upcoming"
+                  ? "Поки що немає активних бронювань."
+                  : "Історія записів поки порожня."}
+              </p>
             ) : (
               <div className="booking-list">
-                {bookings.map((booking, index) => (
+                {shownBookings.map((booking, index) => (
                   <article
                     className="booking-item"
                     key={booking.booking_id}
@@ -1294,25 +1843,122 @@ function App() {
                         Статус:{" "}
                         {String(booking.status ?? "active").toUpperCase()}
                       </p>
+
+                      {booking.status === "completed" && booking.has_review ? (
+                        <p className="meta-line review-done-text">
+                          Відгук уже залишено.
+                        </p>
+                      ) : null}
+
+                      {booking.status === "completed" &&
+                      !booking.has_review &&
+                      reviewEditorBookingId === booking.booking_id ? (
+                        <form
+                          className="review-form"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            void handleSubmitReview(booking);
+                          }}
+                        >
+                          <label>
+                            Рейтинг
+                            <select
+                              value={
+                                (
+                                  reviewDraftByBookingId[booking.booking_id] ??
+                                  EMPTY_REVIEW_DRAFT
+                                ).rating
+                              }
+                              onChange={(event) =>
+                                handleReviewDraftChange(
+                                  booking.booking_id,
+                                  "rating",
+                                  event.target.value,
+                                )
+                              }
+                            >
+                              <option value="5">5 - Відмінно</option>
+                              <option value="4">4 - Добре</option>
+                              <option value="3">3 - Нормально</option>
+                              <option value="2">2 - Погано</option>
+                              <option value="1">1 - Дуже погано</option>
+                            </select>
+                          </label>
+
+                          <label>
+                            Коментар
+                            <input
+                              value={
+                                (
+                                  reviewDraftByBookingId[booking.booking_id] ??
+                                  EMPTY_REVIEW_DRAFT
+                                ).comment
+                              }
+                              onChange={(event) =>
+                                handleReviewDraftChange(
+                                  booking.booking_id,
+                                  "comment",
+                                  event.target.value,
+                                )
+                              }
+                              placeholder="Короткий відгук про заняття"
+                            />
+                          </label>
+
+                          <div className="inline-actions">
+                            <button
+                              type="submit"
+                              disabled={
+                                reviewSubmittingBookingId === booking.booking_id
+                              }
+                            >
+                              {reviewSubmittingBookingId === booking.booking_id
+                                ? "Зберігаю..."
+                                : "Підтвердити відгук"}
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost"
+                              onClick={() => setReviewEditorBookingId(null)}
+                            >
+                              Скасувати
+                            </button>
+                          </div>
+                        </form>
+                      ) : null}
                     </div>
 
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() =>
-                        void handleCancelBooking(booking.booking_id)
-                      }
-                      disabled={
-                        cancelInProgressBookingId === booking.booking_id ||
-                        booking.status !== "active"
-                      }
-                    >
-                      {booking.status !== "active"
-                        ? "Недоступно"
-                        : cancelInProgressBookingId === booking.booking_id
-                          ? "Скасовую..."
-                          : "Скасувати"}
-                    </button>
+                    <div className="inline-actions">
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() =>
+                          void handleCancelBooking(booking.booking_id)
+                        }
+                        disabled={
+                          cancelInProgressBookingId === booking.booking_id ||
+                          booking.status !== "active"
+                        }
+                      >
+                        {booking.status !== "active"
+                          ? "Недоступно"
+                          : cancelInProgressBookingId === booking.booking_id
+                            ? "Скасовую..."
+                            : "Скасувати"}
+                      </button>
+
+                      {booking.status === "completed" && !booking.has_review ? (
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() =>
+                            setReviewEditorBookingId(booking.booking_id)
+                          }
+                        >
+                          Залишити відгук
+                        </button>
+                      ) : null}
+                    </div>
                   </article>
                 ))}
               </div>
@@ -1321,7 +1967,7 @@ function App() {
         </>
       ) : null}
 
-      {currentAccount?.role === "teacher" ? (
+      {currentAccount?.role === "teacher" && !isProfilePage ? (
         <>
           <section className="panel reveal" style={{ animationDelay: "240ms" }}>
             <h2>Створити новий слот</h2>
@@ -1434,8 +2080,8 @@ function App() {
                         disabled={teacherBookingsLoadingSlotId === slot.slot_id}
                       >
                         {expandedTeacherSlotId === slot.slot_id
-                          ? "Сховати записи"
-                          : "Записи студентів"}
+                          ? "Оновити деталі"
+                          : "Деталі слота"}
                       </button>
                       <button
                         type="button"
@@ -1463,87 +2109,6 @@ function App() {
                         Видалити
                       </button>
                     </div>
-
-                    {expandedTeacherSlotId === slot.slot_id ? (
-                      <div className="teacher-bookings-panel">
-                        <p className="teacher-bookings-title">
-                          Записи на цей слот (
-                          {teacherSlotBookingsBySlotId[slot.slot_id]?.length ??
-                            0}
-                          )
-                        </p>
-
-                        {teacherBookingsLoadingSlotId === slot.slot_id ? (
-                          <p className="meta-line">Завантажую записи...</p>
-                        ) : teacherSlotBookingsBySlotId[slot.slot_id]
-                            ?.length ? (
-                          <div className="teacher-bookings-list">
-                            {teacherSlotBookingsBySlotId[slot.slot_id].map(
-                              (booking) => (
-                                <article
-                                  key={booking.booking_id}
-                                  className="teacher-booking-item"
-                                >
-                                  <div>
-                                    <p>
-                                      <strong>{booking.student_name}</strong>
-                                    </p>
-                                    <p className="meta-line">
-                                      {booking.student_email}
-                                    </p>
-                                    <p className="meta-line">
-                                      Статус:{" "}
-                                      {String(booking.status).toUpperCase()}
-                                    </p>
-                                  </div>
-
-                                  <div className="inline-actions">
-                                    <button
-                                      type="button"
-                                      className="ghost"
-                                      onClick={() =>
-                                        void handleTeacherCompleteBooking(
-                                          slot.slot_id,
-                                          booking.booking_id,
-                                        )
-                                      }
-                                      disabled={
-                                        teacherBookingActionKey ===
-                                          `${slot.slot_id}:${booking.booking_id}:complete` ||
-                                        booking.status !== "active"
-                                      }
-                                    >
-                                      Завершити
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="danger"
-                                      onClick={() =>
-                                        void handleTeacherCancelBooking(
-                                          slot.slot_id,
-                                          booking.booking_id,
-                                        )
-                                      }
-                                      disabled={
-                                        teacherBookingActionKey ===
-                                          `${slot.slot_id}:${booking.booking_id}:cancel` ||
-                                        booking.status !== "active"
-                                      }
-                                    >
-                                      Скасувати
-                                    </button>
-                                  </div>
-                                </article>
-                              ),
-                            )}
-                          </div>
-                        ) : (
-                          <p className="empty-state">
-                            Немає записаних студентів на цей слот.
-                          </p>
-                        )}
-                      </div>
-                    ) : null}
                   </article>
                 ))}
               </div>
@@ -1639,10 +2204,121 @@ function App() {
               </form>
             </section>
           ) : null}
+
+          {expandedTeacherSlotId != null ? (
+            <div className="modal-overlay" role="dialog" aria-modal="true">
+              <div className="modal-card">
+                <div className="panel-header-row">
+                  <h2>Деталі слота #{expandedTeacherSlotId}</h2>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => setExpandedTeacherSlotId(null)}
+                  >
+                    Закрити
+                  </button>
+                </div>
+
+                {expandedTeacherSlot ? (
+                  <div className="modal-summary-grid">
+                    <p className="meta-line">
+                      Дисципліна:{" "}
+                      <strong>{expandedTeacherSlot.discipline_name}</strong>
+                    </p>
+                    <p className="meta-line">
+                      Час:{" "}
+                      {formatDateTimeRange(
+                        expandedTeacherSlot.starts_at,
+                        expandedTeacherSlot.ends_at,
+                      )}
+                    </p>
+                    <p className="meta-line">
+                      Місць: {expandedTeacherSlot.available_seats}/
+                      {expandedTeacherSlot.capacity}
+                    </p>
+                    <p className="meta-line">
+                      Статус:{" "}
+                      {expandedTeacherSlot.is_active
+                        ? "Активний"
+                        : "Неактивний"}
+                    </p>
+                  </div>
+                ) : null}
+
+                <h3>Записані студенти</h3>
+
+                {teacherBookingsLoadingSlotId === expandedTeacherSlotId ? (
+                  <p className="meta-line">Завантажую записи...</p>
+                ) : expandedTeacherSlotBookings.length === 0 ? (
+                  <p className="empty-state">Немає записів для цього слота.</p>
+                ) : (
+                  <div className="table-wrap">
+                    <table className="slot-bookings-table">
+                      <thead>
+                        <tr>
+                          <th>Ім'я</th>
+                          <th>Email</th>
+                          <th>Статус</th>
+                          <th>Дії</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {expandedTeacherSlotBookings.map((booking) => (
+                          <tr key={booking.booking_id}>
+                            <td>{booking.student_name}</td>
+                            <td>{booking.student_email}</td>
+                            <td>{String(booking.status).toUpperCase()}</td>
+                            <td>
+                              <div className="inline-actions">
+                                <button
+                                  type="button"
+                                  className="ghost"
+                                  onClick={() =>
+                                    void handleTeacherCompleteBooking(
+                                      expandedTeacherSlotId,
+                                      booking.booking_id,
+                                    )
+                                  }
+                                  disabled={
+                                    teacherBookingActionKey ===
+                                      `${expandedTeacherSlotId}:${booking.booking_id}:complete` ||
+                                    booking.status !== "active"
+                                  }
+                                >
+                                  Завершити
+                                </button>
+                                <button
+                                  type="button"
+                                  className="danger"
+                                  onClick={() =>
+                                    void handleTeacherCancelBooking(
+                                      expandedTeacherSlotId,
+                                      booking.booking_id,
+                                    )
+                                  }
+                                  disabled={
+                                    teacherBookingActionKey ===
+                                      `${expandedTeacherSlotId}:${booking.booking_id}:cancel` ||
+                                    booking.status !== "active"
+                                  }
+                                >
+                                  Скасувати
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
         </>
       ) : null}
 
-      {currentAccount?.role === "admin" ? (
+      {currentAccount?.role === "admin" && !isProfilePage ? (
         <>
           <section className="panel reveal" style={{ animationDelay: "200ms" }}>
             <div className="panel-header-row">
@@ -1771,7 +2447,7 @@ function App() {
               className="panel reveal"
               style={{ animationDelay: "240ms" }}
             >
-              <h2>Створення Teacher Account</h2>
+              <h2>Створення акаунта викладача</h2>
               <form
                 className="profile-form"
                 onSubmit={handleCreateTeacherAccount}
@@ -1798,23 +2474,40 @@ function App() {
                 </label>
 
                 <label>
-                  Teacher profile
+                  Профіль викладача (існуючий)
                   <select
                     name="teacherId"
                     value={teacherAccountForm.teacherId}
                     onChange={handleTeacherAccountChange}
+                    disabled={teacherDirectory.length === 0}
                   >
                     <option value="">Оберіть викладача</option>
                     {teacherDirectory.map((teacher) => (
                       <option key={teacher.id} value={teacher.id}>
                         {teacher.full_name}
+                        {teacher.city_name ? ` · ${teacher.city_name}` : ""}
                       </option>
                     ))}
                   </select>
                 </label>
 
-                <button type="submit" disabled={isAdminAccountsLoading}>
-                  Створити teacher account
+                <p className="hint-text">
+                  Цей крок створює логін/пароль і прив'язує акаунт до вже
+                  наявного профілю викладача.
+                </p>
+
+                {teacherDirectory.length === 0 ? (
+                  <p className="empty-state">
+                    Немає доступних профілів викладачів. Спочатку створіть
+                    профіль викладача в системі.
+                  </p>
+                ) : null}
+
+                <button
+                  type="submit"
+                  disabled={isAdminAccountsLoading || teacherDirectory.length === 0}
+                >
+                  Створити акаунт доступу
                 </button>
               </form>
             </article>

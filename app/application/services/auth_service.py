@@ -2,6 +2,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.application.dto.auth_dto import (
     AccountReadDTO,
+    AccountUpdateDTO,
     AdminBootstrapDTO,
     LoginDTO,
     StudentRegisterDTO,
@@ -45,6 +46,16 @@ class TeacherNotFoundForAuthError(AuthError):
 class BootstrapAlreadyCompletedError(AuthError):
     def __init__(self) -> None:
         super().__init__("Admin bootstrap has already been completed.")
+
+
+class CurrentPasswordInvalidError(AuthError):
+    def __init__(self) -> None:
+        super().__init__("Current password is invalid.")
+
+
+class CityUpdateNotAllowedError(AuthError):
+    def __init__(self) -> None:
+        super().__init__("City can only be updated for student or teacher accounts.")
 
 
 class AuthService:
@@ -134,6 +145,42 @@ class AuthService:
         users = await self._repository.list_users(skip=skip, limit=limit)
         return [self._to_account_read(user) for user in users]
 
+    async def update_current_account(
+        self,
+        current_user: UserAccount,
+        account_in: AccountUpdateDTO,
+    ) -> AccountReadDTO:
+        if account_in.new_password is not None:
+            if account_in.current_password is None or not verify_password(
+                account_in.current_password,
+                current_user.password_hash,
+            ):
+                raise CurrentPasswordInvalidError
+            current_user.password_hash = hash_password(account_in.new_password)
+
+        if account_in.city_id is not None:
+            city = await self._repository.get_city_by_id(account_in.city_id)
+            if city is None:
+                raise CityNotFoundForAuthError(account_in.city_id)
+
+            if current_user.role == UserRole.STUDENT:
+                if current_user.student is None:
+                    raise CityUpdateNotAllowedError
+                current_user.student.city_id = account_in.city_id
+            elif current_user.role == UserRole.TEACHER:
+                if current_user.teacher is None:
+                    raise CityUpdateNotAllowedError
+                current_user.teacher.city_id = account_in.city_id
+            else:
+                raise CityUpdateNotAllowedError
+
+        await self._repository.save_changes()
+
+        refreshed_user = await self._repository.get_user_by_id(current_user.id)
+        if refreshed_user is None:
+            return self._to_account_read(current_user)
+        return self._to_account_read(refreshed_user)
+
     def _build_token_response(self, user: UserAccount) -> TokenReadDTO:
         token = create_access_token(subject=str(user.id), role=user.role.value)
         return TokenReadDTO(
@@ -148,11 +195,35 @@ class AuthService:
 
     @staticmethod
     def _to_account_read(user: UserAccount) -> AccountReadDTO:
+        full_name: str | None = None
+        email: str | None = None
+        city_id: int | None = None
+        city_name: str | None = None
+
+        loaded_student = user.__dict__.get("student")
+        loaded_teacher = user.__dict__.get("teacher")
+
+        if loaded_student is not None:
+            full_name = loaded_student.full_name
+            email = loaded_student.email
+            city_id = loaded_student.city_id
+            city = loaded_student.__dict__.get("city")
+            city_name = city.name if city is not None else None
+        elif loaded_teacher is not None:
+            full_name = loaded_teacher.full_name
+            city_id = loaded_teacher.city_id
+            city = loaded_teacher.__dict__.get("city")
+            city_name = city.name if city is not None else None
+
         return AccountReadDTO(
             user_id=user.id,
             username=user.username,
             role=user.role,
             student_id=user.student_id,
             teacher_id=user.teacher_id,
+            full_name=full_name,
+            email=email,
+            city_id=city_id,
+            city_name=city_name,
             created_at=user.created_at,
         )

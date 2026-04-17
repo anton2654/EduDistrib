@@ -53,6 +53,8 @@ class TeacherReadDTO(BaseModel):
     full_name: str
     city_id: int
     discipline_ids: list[int]
+    average_rating: float | None = None
+    reviews_count: int = 0
 
 
 class StudentCreateDTO(BaseModel):
@@ -209,6 +211,7 @@ class BookingDetailsReadDTO(BaseModel):
     starts_at: datetime
     ends_at: datetime
     status: BookingStatus
+    has_review: bool = False
     created_at: datetime
 
 
@@ -218,6 +221,31 @@ class TeacherSlotBookingReadDTO(BaseModel):
     student_name: str
     student_email: str
     status: BookingStatus
+    created_at: datetime
+
+
+class ReviewCreateDTO(BaseModel):
+    teacher_id: int = Field(gt=0)
+    rating: int = Field(ge=1, le=5)
+    comment: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("comment")
+    @classmethod
+    def normalize_comment(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class ReviewReadDTO(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    teacher_id: int
+    student_id: int
+    rating: int
+    comment: str | None
     created_at: datetime
 
 
