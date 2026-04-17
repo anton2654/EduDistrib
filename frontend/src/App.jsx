@@ -2505,7 +2505,9 @@ function App() {
 
                 <button
                   type="submit"
-                  disabled={isAdminAccountsLoading || teacherDirectory.length === 0}
+                  disabled={
+                    isAdminAccountsLoading || teacherDirectory.length === 0
+                  }
                 >
                   Створити акаунт доступу
                 </button>
