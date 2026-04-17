@@ -195,6 +195,7 @@ async def _ensure_account(
     session: AsyncSession,
     *,
     username: str,
+    email: str | None = None,
     password: str,
     role: UserRole,
     stats: dict[str, int],
@@ -220,6 +221,10 @@ async def _ensure_account(
             account.role = role
             updated = True
 
+        if account.email != email:
+            account.email = email
+            updated = True
+
         if account.student_id != student_id:
             account.student_id = student_id
             updated = True
@@ -235,6 +240,7 @@ async def _ensure_account(
 
     account = UserAccount(
         username=username,
+        email=email,
         password_hash=hash_password(password),
         role=role,
         student_id=student_id,
@@ -381,6 +387,7 @@ async def seed_demo_data() -> None:
             await _ensure_account(
                 session,
                 username="teacher_ivan",
+                email="teacher.ivan@example.com",
                 password="teacher123",
                 role=UserRole.TEACHER,
                 teacher_id=teachers["Ivan Petrenko"].id,
@@ -389,6 +396,7 @@ async def seed_demo_data() -> None:
             await _ensure_account(
                 session,
                 username="teacher_olena",
+                email="teacher.olena@example.com",
                 password="teacher123",
                 role=UserRole.TEACHER,
                 teacher_id=teachers["Olena Shevchenko"].id,
@@ -397,6 +405,7 @@ async def seed_demo_data() -> None:
             await _ensure_account(
                 session,
                 username="teacher_maria",
+                email="teacher.maria@example.com",
                 password="teacher123",
                 role=UserRole.TEACHER,
                 teacher_id=teachers["Maria Koval"].id,

@@ -145,6 +145,16 @@ export async function createStudent({ fullName, email, cityId }) {
   });
 }
 
+export async function createTeacher({ fullName, cityId }) {
+  return request(ENROLLMENT_BASE_URL, "/teachers", {
+    method: "POST",
+    body: {
+      full_name: fullName,
+      city_id: Number(cityId),
+    },
+  });
+}
+
 export async function listAvailableSlots({
   cityId,
   disciplineId,
@@ -270,14 +280,29 @@ export async function registerStudentAccount({
   });
 }
 
-export async function createTeacherAccount({ username, password, teacherId }) {
+export async function createTeacherAccount({
+  username,
+  password,
+  teacherId,
+  fullName,
+  email,
+}) {
+  const body = {
+    username,
+    password,
+    teacher_id: Number(teacherId),
+  };
+
+  if (fullName !== undefined) {
+    body.full_name = fullName;
+  }
+  if (email !== undefined) {
+    body.email = email;
+  }
+
   return request(AUTH_BASE_URL, "/register/teacher", {
     method: "POST",
-    body: {
-      username,
-      password,
-      teacher_id: Number(teacherId),
-    },
+    body,
   });
 }
 
@@ -293,11 +318,23 @@ export async function getCurrentAccount() {
 }
 
 export async function updateCurrentAccount({
+  username,
+  fullName,
+  email,
   currentPassword,
   newPassword,
   cityId,
 } = {}) {
   const body = {};
+  if (username !== undefined) {
+    body.username = username;
+  }
+  if (fullName !== undefined) {
+    body.full_name = fullName;
+  }
+  if (email !== undefined) {
+    body.email = email;
+  }
   if (currentPassword !== undefined) {
     body.current_password = currentPassword;
   }
@@ -332,15 +369,32 @@ export async function listTeacherSlotBookings(
   );
 }
 
-export async function createReview({ teacherId, rating, comment }) {
+export async function createReview({ bookingId, rating, comment }) {
   return request(ENROLLMENT_BASE_URL, "/reviews", {
     method: "POST",
     body: {
-      teacher_id: Number(teacherId),
+      booking_id: Number(bookingId),
       rating: Number(rating),
       comment,
     },
   });
+}
+
+export async function listReviews({
+  teacherId,
+  disciplineId,
+  skip,
+  limit,
+} = {}) {
+  return request(
+    ENROLLMENT_BASE_URL,
+    `/reviews${toQuery({
+      teacher_id: teacherId,
+      discipline_id: disciplineId,
+      skip,
+      limit,
+    })}`,
+  );
 }
 
 export async function cancelTeacherSlotBooking(slotId, bookingId) {
@@ -363,19 +417,29 @@ export async function completeTeacherSlotBooking(slotId, bookingId) {
   );
 }
 
+export async function completeAllTeacherSlotBookings(slotId) {
+  return request(TEACHER_BASE_URL, `/slots/${slotId}/bookings/complete-all`, {
+    method: "POST",
+  });
+}
+
 export async function createTeacherSlot({
   disciplineId,
   startsAt,
   endsAt,
+  description,
   capacity,
   isActive,
 }) {
+  const normalizedDescription = description?.trim();
+
   return request(TEACHER_BASE_URL, "/slots/", {
     method: "POST",
     body: {
       discipline_id: Number(disciplineId),
       starts_at: startsAt,
       ends_at: endsAt,
+      description: normalizedDescription || null,
       capacity: Number(capacity),
       is_active: Boolean(isActive),
     },
@@ -393,6 +457,10 @@ export async function updateTeacherSlot(slotId, payload) {
   }
   if (payload.endsAt !== undefined) {
     body.ends_at = payload.endsAt;
+  }
+  if (payload.description !== undefined) {
+    const normalizedDescription = payload.description?.trim();
+    body.description = normalizedDescription || null;
   }
   if (payload.capacity !== undefined) {
     body.capacity = Number(payload.capacity);

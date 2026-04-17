@@ -16,6 +16,8 @@ from app.application.services.auth_service import (
     BootstrapAlreadyCompletedError,
     CityUpdateNotAllowedError,
     CurrentPasswordInvalidError,
+    EmailUpdateNotAllowedError,
+    FullNameUpdateNotAllowedError,
     CityNotFoundForAuthError,
     EmailAlreadyExistsError,
     InvalidCredentialsError,
@@ -38,7 +40,7 @@ AdminUserDependency = Annotated[
 
 def _to_account_read(user: UserAccount) -> AccountReadDTO:
     full_name: str | None = None
-    email: str | None = None
+    email: str | None = user.email
     city_id: int | None = None
     city_name: str | None = None
 
@@ -115,7 +117,7 @@ async def register_teacher_account(
         return await service.register_teacher_account(teacher_account_in)
     except TeacherNotFoundForAuthError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-    except UsernameAlreadyExistsError as error:
+    except (UsernameAlreadyExistsError, EmailAlreadyExistsError) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
 
@@ -147,7 +149,9 @@ async def update_me(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)) from error
     except CityNotFoundForAuthError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-    except CityUpdateNotAllowedError as error:
+    except (CityUpdateNotAllowedError, FullNameUpdateNotAllowedError, EmailUpdateNotAllowedError) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except (UsernameAlreadyExistsError, EmailAlreadyExistsError) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
 

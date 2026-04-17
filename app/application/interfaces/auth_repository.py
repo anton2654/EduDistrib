@@ -17,6 +17,10 @@ class AuthRepositoryInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_user_by_email(self, email: str) -> UserAccount | None:
+        raise NotImplementedError
+
+    @abstractmethod
     async def list_users(self, *, skip: int = 0, limit: int = 50) -> list[UserAccount]:
         raise NotImplementedError
 
@@ -45,6 +49,7 @@ class AuthRepositoryInterface(ABC):
         self,
         *,
         username: str,
+        email: str | None = None,
         password_hash: str,
         role: UserRole,
         student_id: int | None = None,

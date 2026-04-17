@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -18,6 +18,7 @@ from app.application.interfaces.enrollment_repository import (
     BookingProjection,
     DisciplineAnalyticsProjection,
     EnrollmentRepositoryInterface,
+    ReviewProjection,
     TeacherRatingSummary,
     TeacherSlotBookingProjection,
     TeacherAnalyticsProjection,
@@ -97,15 +98,9 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
         return await self._session.get(Discipline, discipline_id)
 
     async def create_teacher(self, teacher_in: TeacherCreateDTO) -> Teacher:
-        unique_discipline_ids = list(dict.fromkeys(teacher_in.discipline_ids))
-
         teacher = Teacher(
             full_name=teacher_in.full_name,
             city_id=teacher_in.city_id,
-            discipline_links=[
-                TeacherDiscipline(discipline_id=discipline_id)
-                for discipline_id in unique_discipline_ids
-            ],
         )
         self._session.add(teacher)
         await self._session.commit()
@@ -240,6 +235,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 Discipline.name.label("discipline_name"),
                 TeacherSlot.starts_at,
                 TeacherSlot.ends_at,
+                TeacherSlot.description,
                 TeacherSlot.capacity,
                 reserved_seats.label("reserved_seats"),
                 TeacherSlot.is_active,
@@ -255,6 +251,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 Discipline.name,
                 TeacherSlot.starts_at,
                 TeacherSlot.ends_at,
+                TeacherSlot.description,
                 TeacherSlot.capacity,
                 TeacherSlot.is_active,
                 TeacherSlot.created_at,
@@ -271,6 +268,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 discipline_name=row["discipline_name"],
                 starts_at=row["starts_at"],
                 ends_at=row["ends_at"],
+                description=row["description"],
                 capacity=row["capacity"],
                 reserved_seats=int(row["reserved_seats"] or 0),
                 is_active=row["is_active"],
@@ -288,7 +286,13 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
         return slot
 
     async def delete_slot(self, slot: TeacherSlot) -> None:
-        await self._session.delete(slot)
+        await self._session.execute(
+            update(Booking)
+            .where(Booking.slot_id == slot.id, Booking.status == BookingStatus.ACTIVE)
+            .values(status=BookingStatus.CANCELLED)
+        )
+
+        slot.is_active = False
         await self._session.commit()
 
     async def list_available_slots(
@@ -315,6 +319,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 Discipline.name.label("discipline_name"),
                 TeacherSlot.starts_at,
                 TeacherSlot.ends_at,
+                TeacherSlot.description,
                 TeacherSlot.capacity,
                 reserved_seats.label("reserved_seats"),
             )
@@ -333,6 +338,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 Discipline.name,
                 TeacherSlot.starts_at,
                 TeacherSlot.ends_at,
+                TeacherSlot.description,
                 TeacherSlot.capacity,
             )
             .having(reserved_seats < TeacherSlot.capacity)
@@ -363,6 +369,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 discipline_name=row["discipline_name"],
                 starts_at=row["starts_at"],
                 ends_at=row["ends_at"],
+                description=row["description"],
                 capacity=row["capacity"],
                 reserved_seats=int(row["reserved_seats"] or 0),
             )
@@ -698,6 +705,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 Discipline.name.label("discipline_name"),
                 TeacherSlot.starts_at,
                 TeacherSlot.ends_at,
+                TeacherSlot.description,
                 Booking.status,
                 case((Review.id.is_not(None), True), else_=False).label("has_review"),
                 Booking.created_at,
@@ -709,10 +717,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
             .join(Discipline, Discipline.id == TeacherSlot.discipline_id)
             .outerjoin(
                 Review,
-                and_(
-                    Review.teacher_id == Teacher.id,
-                    Review.student_id == Student.id,
-                ),
+                Review.booking_id == Booking.id,
             )
             .order_by(TeacherSlot.starts_at, Booking.id)
         )
@@ -742,6 +747,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 discipline_name=row["discipline_name"],
                 starts_at=row["starts_at"],
                 ends_at=row["ends_at"],
+                description=row["description"],
                 status=row["status"],
                 has_review=bool(row["has_review"]),
                 created_at=row["created_at"],
@@ -791,37 +797,52 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
     async def get_booking_by_id(self, booking_id: int) -> Booking | None:
         return await self._session.get(Booking, booking_id)
 
-    async def has_completed_booking_with_teacher(self, student_id: int, teacher_id: int) -> bool:
+    async def cancel_active_bookings_for_slot(self, slot_id: int) -> int:
         stmt = (
-            select(Booking.id)
-            .join(TeacherSlot, TeacherSlot.id == Booking.slot_id)
+            update(Booking)
             .where(
-                Booking.student_id == student_id,
-                TeacherSlot.teacher_id == teacher_id,
-                Booking.status == BookingStatus.COMPLETED,
+                Booking.slot_id == slot_id,
+                Booking.status == BookingStatus.ACTIVE,
             )
-            .limit(1)
+            .values(status=BookingStatus.CANCELLED)
+            .returning(Booking.id)
         )
         result = await self._session.execute(stmt)
-        return result.scalar_one_or_none() is not None
+        updated_ids = result.scalars().all()
+        await self._session.commit()
+        return len(updated_ids)
 
-    async def get_review_by_teacher_student(self, teacher_id: int, student_id: int) -> Review | None:
-        stmt = select(Review).where(
-            Review.teacher_id == teacher_id,
-            Review.student_id == student_id,
+    async def complete_active_bookings_for_slot(self, slot_id: int) -> int:
+        stmt = (
+            update(Booking)
+            .where(
+                Booking.slot_id == slot_id,
+                Booking.status == BookingStatus.ACTIVE,
+            )
+            .values(status=BookingStatus.COMPLETED)
+            .returning(Booking.id)
         )
+        result = await self._session.execute(stmt)
+        updated_ids = result.scalars().all()
+        await self._session.commit()
+        return len(updated_ids)
+
+    async def get_review_by_booking(self, booking_id: int) -> Review | None:
+        stmt = select(Review).where(Review.booking_id == booking_id)
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
     async def create_review(
         self,
         *,
+        booking_id: int,
         teacher_id: int,
         student_id: int,
         rating: int,
         comment: str | None,
     ) -> Review:
         review = Review(
+            booking_id=booking_id,
             teacher_id=teacher_id,
             student_id=student_id,
             rating=rating,
@@ -831,6 +852,61 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
         await self._session.commit()
         await self._session.refresh(review)
         return review
+
+    async def list_reviews(
+        self,
+        teacher_id: int | None = None,
+        discipline_id: int | None = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> list[ReviewProjection]:
+        stmt = (
+            select(
+                Review.id.label("review_id"),
+                Review.booking_id,
+                Review.teacher_id,
+                Teacher.full_name.label("teacher_name"),
+                Review.student_id,
+                Student.full_name.label("student_name"),
+                Discipline.id.label("discipline_id"),
+                Discipline.name.label("discipline_name"),
+                Review.rating,
+                Review.comment,
+                Review.created_at,
+            )
+            .join(Teacher, Teacher.id == Review.teacher_id)
+            .join(Student, Student.id == Review.student_id)
+            .join(Booking, Booking.id == Review.booking_id)
+            .join(TeacherSlot, TeacherSlot.id == Booking.slot_id)
+            .join(Discipline, Discipline.id == TeacherSlot.discipline_id)
+            .order_by(Review.created_at.desc(), Review.id.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+
+        if teacher_id is not None:
+            stmt = stmt.where(Review.teacher_id == teacher_id)
+
+        if discipline_id is not None:
+            stmt = stmt.where(TeacherSlot.discipline_id == discipline_id)
+
+        rows = (await self._session.execute(stmt)).mappings().all()
+        return [
+            ReviewProjection(
+                review_id=row["review_id"],
+                booking_id=row["booking_id"],
+                teacher_id=row["teacher_id"],
+                teacher_name=row["teacher_name"],
+                student_id=row["student_id"],
+                student_name=row["student_name"],
+                discipline_id=row["discipline_id"],
+                discipline_name=row["discipline_name"],
+                rating=row["rating"],
+                comment=row["comment"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
 
     async def update_booking_status(self, booking: Booking, status: BookingStatus) -> Booking:
         booking.status = status

@@ -30,6 +30,7 @@ class AvailableSlotProjection:
     discipline_name: str
     starts_at: datetime
     ends_at: datetime
+    description: str | None
     capacity: int
     reserved_seats: int
 
@@ -49,6 +50,7 @@ class BookingProjection:
     discipline_name: str
     starts_at: datetime
     ends_at: datetime
+    description: str | None
     status: BookingStatus
     has_review: bool
     created_at: datetime
@@ -72,6 +74,7 @@ class TeacherSlotProjection:
     discipline_name: str
     starts_at: datetime
     ends_at: datetime
+    description: str | None
     capacity: int
     reserved_seats: int
     is_active: bool
@@ -123,6 +126,21 @@ class TeacherRatingSummary:
     teacher_id: int
     average_rating: float
     reviews_count: int
+
+
+@dataclass(frozen=True)
+class ReviewProjection:
+    review_id: int
+    booking_id: int
+    teacher_id: int
+    teacher_name: str
+    student_id: int
+    student_name: str
+    discipline_id: int
+    discipline_name: str
+    rating: int
+    comment: str | None
+    created_at: datetime
 
 
 class EnrollmentRepositoryInterface(ABC):
@@ -306,22 +324,37 @@ class EnrollmentRepositoryInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def has_completed_booking_with_teacher(self, student_id: int, teacher_id: int) -> bool:
+    async def cancel_active_bookings_for_slot(self, slot_id: int) -> int:
         raise NotImplementedError
 
     @abstractmethod
-    async def get_review_by_teacher_student(self, teacher_id: int, student_id: int) -> Review | None:
+    async def complete_active_bookings_for_slot(self, slot_id: int) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_review_by_booking(self, booking_id: int) -> Review | None:
         raise NotImplementedError
 
     @abstractmethod
     async def create_review(
         self,
         *,
+        booking_id: int,
         teacher_id: int,
         student_id: int,
         rating: int,
         comment: str | None,
     ) -> Review:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_reviews(
+        self,
+        teacher_id: int | None = None,
+        discipline_id: int | None = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> list[ReviewProjection]:
         raise NotImplementedError
 
     @abstractmethod

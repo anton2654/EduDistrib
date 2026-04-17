@@ -12,10 +12,14 @@ class Review(Base):
     __tablename__ = "reviews"
     __table_args__ = (
         CheckConstraint("rating >= 1 AND rating <= 5", name="ck_reviews_rating_range"),
-        UniqueConstraint("teacher_id", "student_id", name="uq_reviews_teacher_student"),
+        UniqueConstraint("booking_id", name="uq_reviews_booking"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    booking_id: Mapped[int] = mapped_column(
+        ForeignKey("bookings.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     teacher_id: Mapped[int] = mapped_column(
         ForeignKey("teachers.id", ondelete="CASCADE"),
         nullable=False,

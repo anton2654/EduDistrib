@@ -30,7 +30,7 @@ class UsernameAlreadyExistsError(AuthError):
 
 class EmailAlreadyExistsError(AuthError):
     def __init__(self, email: str) -> None:
-        super().__init__(f"Email '{email}' is already used by another student.")
+        super().__init__(f"Email '{email}' is already used by another account.")
 
 
 class CityNotFoundForAuthError(AuthError):
@@ -56,6 +56,16 @@ class CurrentPasswordInvalidError(AuthError):
 class CityUpdateNotAllowedError(AuthError):
     def __init__(self) -> None:
         super().__init__("City can only be updated for student or teacher accounts.")
+
+
+class FullNameUpdateNotAllowedError(AuthError):
+    def __init__(self) -> None:
+        super().__init__("Full name can only be updated for student or teacher accounts.")
+
+
+class EmailUpdateNotAllowedError(AuthError):
+    def __init__(self) -> None:
+        super().__init__("Email can only be updated for student or teacher accounts.")
 
 
 class AuthService:
@@ -116,9 +126,15 @@ class AuthService:
         if existing_user is not None:
             raise UsernameAlreadyExistsError(teacher_account_in.username)
 
+        if teacher_account_in.email is not None:
+            existing_email_owner = await self._repository.get_user_by_email(teacher_account_in.email)
+            if existing_email_owner is not None:
+                raise EmailAlreadyExistsError(teacher_account_in.email)
+
         try:
             user = await self._repository.create_user_account(
                 username=teacher_account_in.username,
+                email=teacher_account_in.email,
                 password_hash=hash_password(teacher_account_in.password),
                 role=UserRole.TEACHER,
                 teacher_id=teacher_account_in.teacher_id,
@@ -150,6 +166,47 @@ class AuthService:
         current_user: UserAccount,
         account_in: AccountUpdateDTO,
     ) -> AccountReadDTO:
+        if account_in.username is not None and account_in.username != current_user.username:
+            existing_user = await self._repository.get_user_by_username(account_in.username)
+            if existing_user is not None and existing_user.id != current_user.id:
+                raise UsernameAlreadyExistsError(account_in.username)
+            current_user.username = account_in.username
+
+        if account_in.full_name is not None:
+            if current_user.role == UserRole.STUDENT:
+                if current_user.student is None:
+                    raise FullNameUpdateNotAllowedError
+                current_user.student.full_name = account_in.full_name
+            elif current_user.role == UserRole.TEACHER:
+                if current_user.teacher is None:
+                    raise FullNameUpdateNotAllowedError
+                current_user.teacher.full_name = account_in.full_name
+            else:
+                raise FullNameUpdateNotAllowedError
+
+        if account_in.email is not None:
+            if current_user.role == UserRole.STUDENT:
+                if current_user.student is None:
+                    raise EmailUpdateNotAllowedError
+
+                existing_student = await self._repository.get_student_by_email(account_in.email)
+                if (
+                    existing_student is not None
+                    and current_user.student_id is not None
+                    and existing_student.id != current_user.student_id
+                ):
+                    raise EmailAlreadyExistsError(account_in.email)
+
+                current_user.student.email = account_in.email
+            elif current_user.role == UserRole.TEACHER:
+                existing_email_owner = await self._repository.get_user_by_email(account_in.email)
+                if existing_email_owner is not None and existing_email_owner.id != current_user.id:
+                    raise EmailAlreadyExistsError(account_in.email)
+
+                current_user.email = account_in.email
+            else:
+                raise EmailUpdateNotAllowedError
+
         if account_in.new_password is not None:
             if account_in.current_password is None or not verify_password(
                 account_in.current_password,
@@ -196,7 +253,7 @@ class AuthService:
     @staticmethod
     def _to_account_read(user: UserAccount) -> AccountReadDTO:
         full_name: str | None = None
-        email: str | None = None
+        email: str | None = user.email
         city_id: int | None = None
         city_name: str | None = None
 

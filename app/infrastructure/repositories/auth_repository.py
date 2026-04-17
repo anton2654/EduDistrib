@@ -31,6 +31,11 @@ class AuthRepository(AuthRepositoryInterface):
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_user_by_email(self, email: str) -> UserAccount | None:
+        stmt = select(UserAccount).where(UserAccount.email == email)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def list_users(self, *, skip: int = 0, limit: int = 50) -> list[UserAccount]:
         stmt = (
             select(UserAccount)
@@ -71,6 +76,7 @@ class AuthRepository(AuthRepositoryInterface):
         self,
         *,
         username: str,
+        email: str | None = None,
         password_hash: str,
         role: UserRole,
         student_id: int | None = None,
@@ -78,6 +84,7 @@ class AuthRepository(AuthRepositoryInterface):
     ) -> UserAccount:
         account = UserAccount(
             username=username,
+            email=email,
             password_hash=password_hash,
             role=role,
             student_id=student_id,

@@ -2,6 +2,7 @@ fastapi
 SQLAlchemy
 asyncpg
 pydantic
+email-validator
 uvicorn
 anyio
 starlette

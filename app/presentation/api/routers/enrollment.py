@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import EmailStr
 
 from app.application.dto.enrollment_dto import (
     AnalyticsOverviewReadDTO,
@@ -15,6 +16,7 @@ from app.application.dto.enrollment_dto import (
     DisciplineCreateDTO,
     DisciplineReadDTO,
     ReviewCreateDTO,
+    ReviewListReadDTO,
     ReviewReadDTO,
     StudentCreateDTO,
     StudentReadDTO,
@@ -29,6 +31,7 @@ from app.application.interfaces.enrollment_repository import (
     AvailableSlotProjection,
     BookingProjection,
     DisciplineAnalyticsProjection,
+    ReviewProjection,
     TeacherRatingSummary,
     TeacherAnalyticsProjection,
 )
@@ -48,7 +51,6 @@ from app.application.services.enrollment_service import (
     SlotNotFoundError,
     StudentTimeConflictError,
     StudentNotFoundError,
-    TeacherDisciplineMismatchError,
     TeacherNotFoundError,
 )
 from app.domain.entities.teacher import Teacher
@@ -91,6 +93,7 @@ def _available_slot_to_dto(slot: AvailableSlotProjection) -> AvailableSlotReadDT
         discipline_name=slot.discipline_name,
         starts_at=slot.starts_at,
         ends_at=slot.ends_at,
+        description=slot.description,
         capacity=slot.capacity,
         reserved_seats=slot.reserved_seats,
         available_seats=available_seats,
@@ -112,6 +115,7 @@ def _booking_to_dto(booking: BookingProjection) -> BookingDetailsReadDTO:
         discipline_name=booking.discipline_name,
         starts_at=booking.starts_at,
         ends_at=booking.ends_at,
+        description=booking.description,
         status=booking.status,
         has_review=booking.has_review,
         created_at=booking.created_at,
@@ -120,6 +124,22 @@ def _booking_to_dto(booking: BookingProjection) -> BookingDetailsReadDTO:
 
 def _review_to_dto(review) -> ReviewReadDTO:
     return ReviewReadDTO.model_validate(review)
+
+
+def _review_projection_to_dto(review: ReviewProjection) -> ReviewListReadDTO:
+    return ReviewListReadDTO(
+        review_id=review.review_id,
+        booking_id=review.booking_id,
+        teacher_id=review.teacher_id,
+        teacher_name=review.teacher_name,
+        student_id=review.student_id,
+        student_name=review.student_name,
+        discipline_id=review.discipline_id,
+        discipline_name=review.discipline_name,
+        rating=review.rating,
+        comment=review.comment,
+        created_at=review.created_at,
+    )
 
 
 def _overview_to_dto(overview: AnalyticsOverviewProjection) -> AnalyticsOverviewReadDTO:
@@ -254,7 +274,7 @@ async def list_students(
     service: EnrollmentServiceDependency,
     _: AdminUserDependency,
     city_id: int | None = Query(default=None, gt=0),
-    email: str | None = Query(default=None, min_length=3, max_length=255),
+    email: EmailStr | None = Query(default=None, max_length=255),
 ) -> list[StudentReadDTO]:
     try:
         students = await service.list_students(city_id=city_id, email=email)
@@ -274,8 +294,6 @@ async def create_slot(
         slot = await service.create_slot(slot_in)
     except (TeacherNotFoundError, DisciplineNotFoundError) as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-    except TeacherDisciplineMismatchError as error:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     return TeacherSlotReadDTO.model_validate(slot)
 
@@ -480,14 +498,35 @@ async def create_review(
 
     try:
         review = await service.create_review(
-            teacher_id=review_in.teacher_id,
+            booking_id=review_in.booking_id,
             student_id=current_user.student_id,
             rating=review_in.rating,
             comment=review_in.comment,
         )
-    except (TeacherNotFoundError, StudentNotFoundError) as error:
+    except (BookingNotFoundError, SlotNotFoundError, StudentNotFoundError) as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except (ReviewNotAllowedError, ReviewAlreadyExistsError) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     return _review_to_dto(review)
+
+
+@router.get("/reviews", response_model=list[ReviewListReadDTO])
+async def list_reviews(
+    service: EnrollmentServiceDependency,
+    teacher_id: int | None = Query(default=None, gt=0),
+    discipline_id: int | None = Query(default=None, gt=0),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[ReviewListReadDTO]:
+    try:
+        rows = await service.list_reviews(
+            teacher_id=teacher_id,
+            discipline_id=discipline_id,
+            skip=skip,
+            limit=limit,
+        )
+    except (TeacherNotFoundError, DisciplineNotFoundError) as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    return [_review_projection_to_dto(row) for row in rows]

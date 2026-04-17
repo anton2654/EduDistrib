@@ -238,12 +238,14 @@ label {
 
 input,
 select,
+textarea,
 button {
   font: inherit;
 }
 
 input,
-select {
+select,
+textarea {
   border: 1px solid #c7d8e8;
   border-radius: 10px;
   padding: 10px;
@@ -255,10 +257,16 @@ select {
 }
 
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   outline: none;
   border-color: #0e7490;
   box-shadow: 0 0 0 3px rgba(14, 116, 144, 0.2);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 88px;
 }
 
 button {
@@ -309,6 +317,13 @@ button.ghost {
   color: #3d5f77;
 }
 
+.field-error {
+  margin: -2px 0 0;
+  color: #b91c1c;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 .badge {
   background: #e6f4f6;
   color: #165368;
@@ -321,7 +336,18 @@ button.ghost {
 .slot-grid {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(auto-fill, minmax(235px, 1fr));
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+.slot-description {
+  margin: 0;
+  color: #233f53;
+  white-space: pre-wrap;
+}
+
+.pagination-controls {
+  margin-top: 10px;
+  justify-content: flex-end;
 }
 
 .slot-card,
@@ -487,6 +513,11 @@ button.ghost.is-active {
   margin-top: 14px;
 }
 
+.profile-page-stack {
+  display: grid;
+  gap: 14px;
+}
+
 .booking-tabs-row {
   margin: 12px 0;
 }
@@ -571,6 +602,10 @@ button.ghost.is-active {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.span-all-columns {
+  grid-column: 1 / -1;
+}
+
 .checkbox-row {
   display: flex;
   align-items: center;
@@ -582,7 +617,26 @@ button.ghost.is-active {
 .teacher-slot-grid {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+.slot-section-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.slot-section-block {
+  display: grid;
+  gap: 10px;
+}
+
+.slot-section-block + .slot-section-block {
+  border-top: 1px dashed #c5d8ea;
+  padding-top: 14px;
+}
+
+.slot-subheader-row h3 {
+  margin: 0;
 }
 
 .teacher-bookings-panel {
@@ -613,6 +667,10 @@ button.ghost.is-active {
 
 .teacher-booking-item p {
   margin: 0;
+}
+
+.review-item {
+  gap: 6px;
 }
 
 .inline-actions {
@@ -676,5 +734,12 @@ button.danger:hover {
 
   .auth-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 820px) {
+  .slot-grid,
+  .teacher-slot-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
