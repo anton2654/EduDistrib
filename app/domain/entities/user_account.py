@@ -48,3 +48,7 @@ class UserAccount(Base):
 
     student: Mapped["Student | None"] = relationship(back_populates="account")
     teacher: Mapped["Teacher | None"] = relationship(back_populates="account")
+    notifications: Mapped[list["Notification"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )

@@ -178,11 +178,11 @@ async def test_admin_can_access_enrollment_analytics_routes() -> None:
             headers=admin_headers,
         )
         teachers_response = await client.get(
-            "/api/v1/enrollment/analytics/teachers",
+            "/api/v1/enrollment/analytics/teachers?skip=0&limit=5",
             headers=admin_headers,
         )
         disciplines_response = await client.get(
-            "/api/v1/enrollment/analytics/disciplines",
+            "/api/v1/enrollment/analytics/disciplines?skip=0&limit=5",
             headers=admin_headers,
         )
 
@@ -192,10 +192,16 @@ async def test_admin_can_access_enrollment_analytics_routes() -> None:
     assert "utilization_rate_percent" in overview_payload
 
     assert teachers_response.status_code == 200
-    assert isinstance(teachers_response.json(), list)
+    teachers_payload = teachers_response.json()
+    assert isinstance(teachers_payload, list)
+    assert len(teachers_payload) <= 5
+    for row in teachers_payload:
+        assert "average_rating" in row
 
     assert disciplines_response.status_code == 200
-    assert isinstance(disciplines_response.json(), list)
+    disciplines_payload = disciplines_response.json()
+    assert isinstance(disciplines_payload, list)
+    assert len(disciplines_payload) <= 5
 
 
 @pytest.mark.asyncio
@@ -428,6 +434,55 @@ async def test_teacher_list_supports_search_query_filter() -> None:
     assert isinstance(rows, list)
     for row in rows:
         assert "ivan" in row["full_name"].lower()
+
+
+@pytest.mark.asyncio
+async def test_teachers_and_available_slots_include_rating_fields() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        teachers_response = await client.get("/api/v1/enrollment/teachers?skip=0&limit=5")
+        assert teachers_response.status_code == 200
+        teachers = teachers_response.json()
+        for teacher in teachers:
+            assert "average_rating" in teacher
+            assert "reviews_count" in teacher
+
+        slots_response = await client.get("/api/v1/enrollment/slots/available?skip=0&limit=5")
+        assert slots_response.status_code == 200
+        slots = slots_response.json()
+        for slot in slots:
+            assert "average_rating" in slot
+            assert "reviews_count" in slot
+
+
+@pytest.mark.asyncio
+async def test_teacher_reviews_endpoint_returns_reviews_for_specific_teacher() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        teachers_response = await client.get("/api/v1/enrollment/teachers?skip=0&limit=1")
+        assert teachers_response.status_code == 200
+        teachers = teachers_response.json()
+        if not teachers:
+            pytest.skip("No teachers available. Seed demo data before running this test.")
+
+        teacher_id = teachers[0]["id"]
+        reviews_response = await client.get(
+            f"/api/v1/enrollment/teachers/{teacher_id}/reviews",
+        )
+
+    assert reviews_response.status_code == 200
+    rows = reviews_response.json()
+    assert isinstance(rows, list)
+    for row in rows:
+        assert row["teacher_id"] == teacher_id
+        assert "student_name" in row
+        assert "rating" in row
+        assert "comment" in row
+        assert "created_at" in row
 
 
 @pytest.mark.asyncio
@@ -728,7 +783,7 @@ async def test_teacher_email_is_persisted_and_can_be_updated() -> None:
 
 
 @pytest.mark.asyncio
-async def test_teacher_slot_update_is_restricted_when_active_bookings_exist() -> None:
+async def test_teacher_slot_update_allows_time_change_and_notifies_students() -> None:
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://testserver",
@@ -793,7 +848,19 @@ async def test_teacher_slot_update_is_restricted_when_active_bookings_exist() ->
             },
         )
 
-    assert move_time_response.status_code == 409
+        assert move_time_response.status_code == 200
+
+        student_notifications_response = await client.get(
+            "/api/v1/notifications/me",
+            headers=student_a_headers,
+        )
+
+    assert student_notifications_response.status_code == 200
+    student_notifications = student_notifications_response.json()
+    assert any(
+        notification["title"] == "Зміна деталей заняття"
+        for notification in student_notifications
+    )
 
 
 @pytest.mark.asyncio
@@ -847,8 +914,228 @@ async def test_teacher_can_complete_all_bookings_for_slot() -> None:
             None,
         )
 
+        student_notifications_response = await client.get(
+            "/api/v1/notifications/me",
+            headers=student_headers,
+        )
+
     assert booking_row is not None
     assert booking_row["status"] == "completed"
+    assert student_notifications_response.status_code == 200
+    student_notifications = student_notifications_response.json()
+    assert any(
+        notification["title"] == "Заняття завершено"
+        for notification in student_notifications
+    )
+
+
+@pytest.mark.asyncio
+async def test_student_can_read_notifications_after_booking_completion() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        teacher_headers = await _ensure_teacher_headers(client)
+        if teacher_headers is None:
+            pytest.skip("Seeded teacher account is required for notifications test.")
+
+        slots_response = await client.get("/api/v1/teacher/slots/", headers=teacher_headers)
+        assert slots_response.status_code == 200
+        slots = slots_response.json()
+        target_slot = next(
+            (slot for slot in slots if slot["is_active"] and slot["available_seats"] > 0),
+            None,
+        )
+        if target_slot is None:
+            pytest.skip("No suitable active slot found for notifications test.")
+
+        student_payload, student_headers = await _register_student(client)
+        booking_response = await client.post(
+            "/api/v1/enrollment/bookings",
+            headers=student_headers,
+            json={
+                "student_id": student_payload["student_id"],
+                "slot_id": target_slot["slot_id"],
+            },
+        )
+        if booking_response.status_code != 201:
+            pytest.skip("Could not create booking for notifications test.")
+
+        booking_id = booking_response.json()["id"]
+
+        complete_response = await client.post(
+            f"/api/v1/teacher/slots/{target_slot['slot_id']}/bookings/{booking_id}/complete",
+            headers=teacher_headers,
+        )
+        assert complete_response.status_code == 200
+
+        notifications_response = await client.get(
+            "/api/v1/notifications/me",
+            headers=student_headers,
+        )
+        assert notifications_response.status_code == 200
+        notifications = notifications_response.json()
+
+        completion_notification = next(
+            (
+                notification
+                for notification in notifications
+                if notification["title"] == "Заняття завершено"
+            ),
+            None,
+        )
+        assert completion_notification is not None
+        assert completion_notification["is_read"] is False
+
+        mark_read_response = await client.patch(
+            f"/api/v1/notifications/{completion_notification['id']}/read",
+            headers=student_headers,
+        )
+
+    assert mark_read_response.status_code == 200
+    assert mark_read_response.json()["is_read"] is True
+
+
+@pytest.mark.asyncio
+async def test_student_can_clear_notifications_history() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        teacher_headers = await _ensure_teacher_headers(client)
+        if teacher_headers is None:
+            pytest.skip("Seeded teacher account is required for notifications test.")
+
+        slots_response = await client.get("/api/v1/teacher/slots/", headers=teacher_headers)
+        assert slots_response.status_code == 200
+        slots = slots_response.json()
+        target_slot = next(
+            (slot for slot in slots if slot["is_active"] and slot["available_seats"] > 0),
+            None,
+        )
+        if target_slot is None:
+            pytest.skip("No suitable active slot found for notifications clear test.")
+
+        student_payload, student_headers = await _register_student(client)
+        booking_response = await client.post(
+            "/api/v1/enrollment/bookings",
+            headers=student_headers,
+            json={
+                "student_id": student_payload["student_id"],
+                "slot_id": target_slot["slot_id"],
+            },
+        )
+        if booking_response.status_code != 201:
+            pytest.skip("Could not create booking for notifications clear test.")
+
+        booking_id = booking_response.json()["id"]
+        complete_response = await client.post(
+            f"/api/v1/teacher/slots/{target_slot['slot_id']}/bookings/{booking_id}/complete",
+            headers=teacher_headers,
+        )
+        assert complete_response.status_code == 200
+
+        notifications_before_clear = await client.get(
+            "/api/v1/notifications/me",
+            headers=student_headers,
+        )
+        assert notifications_before_clear.status_code == 200
+        assert len(notifications_before_clear.json()) >= 1
+
+        clear_response = await client.delete(
+            "/api/v1/notifications/me",
+            headers=student_headers,
+        )
+        assert clear_response.status_code == 204
+
+        notifications_after_clear = await client.get(
+            "/api/v1/notifications/me",
+            headers=student_headers,
+        )
+
+    assert notifications_after_clear.status_code == 200
+    assert notifications_after_clear.json() == []
+
+
+@pytest.mark.asyncio
+async def test_teacher_gets_notification_when_group_is_fully_booked() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        teacher_headers = await _ensure_teacher_headers(client)
+        if teacher_headers is None:
+            pytest.skip("Seeded teacher account is required for notifications test.")
+
+        teacher_me_response = await client.get("/api/v1/auth/me", headers=teacher_headers)
+        assert teacher_me_response.status_code == 200
+        teacher_me = teacher_me_response.json()
+        if teacher_me.get("teacher_id") is None:
+            pytest.skip("Teacher account is not linked to teacher profile.")
+
+        disciplines_response = await client.get("/api/v1/enrollment/disciplines")
+        assert disciplines_response.status_code == 200
+        disciplines = disciplines_response.json()
+        if not disciplines:
+            pytest.skip("No disciplines available.")
+
+        existing_notifications_response = await client.get(
+            "/api/v1/notifications/me",
+            headers=teacher_headers,
+        )
+        assert existing_notifications_response.status_code == 200
+        existing_notifications = existing_notifications_response.json()
+        baseline_group_full_count = sum(
+            1 for notification in existing_notifications if notification["title"] == "Групу набрано"
+        )
+
+        starts_at = (datetime.utcnow() + timedelta(days=7)).replace(
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        ends_at = starts_at + timedelta(hours=1)
+
+        create_slot_response = await client.post(
+            "/api/v1/teacher/slots/",
+            headers=teacher_headers,
+            json={
+                "discipline_id": disciplines[0]["id"],
+                "starts_at": starts_at.isoformat(),
+                "ends_at": ends_at.isoformat(),
+                "description": "Notification fill-up test slot",
+                "capacity": 1,
+                "is_active": True,
+            },
+        )
+        if create_slot_response.status_code != 201:
+            pytest.skip("Could not create test slot for teacher notifications.")
+
+        slot_id = create_slot_response.json()["id"]
+
+        student_payload, student_headers = await _register_student(client)
+        booking_response = await client.post(
+            "/api/v1/enrollment/bookings",
+            headers=student_headers,
+            json={
+                "student_id": student_payload["student_id"],
+                "slot_id": slot_id,
+            },
+        )
+        if booking_response.status_code != 201:
+            pytest.skip("Could not fill slot for teacher notifications test.")
+
+        teacher_notifications_response = await client.get(
+            "/api/v1/notifications/me",
+            headers=teacher_headers,
+        )
+
+    assert teacher_notifications_response.status_code == 200
+    teacher_notifications = teacher_notifications_response.json()
+    updated_group_full_count = sum(
+        1 for notification in teacher_notifications if notification["title"] == "Групу набрано"
+    )
+    assert updated_group_full_count >= baseline_group_full_count + 1
 
 
 @pytest.mark.asyncio
@@ -923,6 +1210,92 @@ async def test_teacher_slot_delete_soft_cancels_active_bookings() -> None:
     assert updated_slot["is_active"] is False
     assert updated_booking is not None
     assert updated_booking["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_teacher_can_complete_entire_slot_via_enrollment_endpoint() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        teacher_headers = await _ensure_teacher_headers(client)
+        if teacher_headers is None:
+            pytest.skip("Seeded teacher account is required for this test.")
+
+        slots_response = await client.get("/api/v1/teacher/slots/", headers=teacher_headers)
+        assert slots_response.status_code == 200
+        slots = slots_response.json()
+        target_slot = next(
+            (slot for slot in slots if slot["is_active"] and slot["available_seats"] > 0),
+            None,
+        )
+        if target_slot is None:
+            pytest.skip("No suitable active slot found for complete-slot test.")
+
+        student_payload, student_headers = await _register_student(client)
+        booking_response = await client.post(
+            "/api/v1/enrollment/bookings",
+            headers=student_headers,
+            json={
+                "student_id": student_payload["student_id"],
+                "slot_id": target_slot["slot_id"],
+            },
+        )
+        if booking_response.status_code != 201:
+            pytest.skip("Could not create booking for complete-slot test.")
+
+        booking_id = booking_response.json()["id"]
+
+        complete_slot_response = await client.post(
+            f"/api/v1/enrollment/slots/{target_slot['slot_id']}/complete",
+            headers=teacher_headers,
+        )
+        assert complete_slot_response.status_code == 200
+        assert complete_slot_response.json()["is_active"] is False
+
+        updated_slots_response = await client.get(
+            "/api/v1/teacher/slots/",
+            headers=teacher_headers,
+        )
+        assert updated_slots_response.status_code == 200
+        updated_slot = next(
+            (
+                slot
+                for slot in updated_slots_response.json()
+                if slot["slot_id"] == target_slot["slot_id"]
+            ),
+            None,
+        )
+
+        student_bookings_response = await client.get(
+            "/api/v1/enrollment/bookings",
+            headers=student_headers,
+        )
+        assert student_bookings_response.status_code == 200
+        updated_booking = next(
+            (
+                booking
+                for booking in student_bookings_response.json()
+                if booking["booking_id"] == booking_id
+            ),
+            None,
+        )
+
+        student_notifications_response = await client.get(
+            "/api/v1/notifications/me",
+            headers=student_headers,
+        )
+
+    assert updated_slot is not None
+    assert updated_slot["is_active"] is False
+    assert updated_booking is not None
+    assert updated_booking["status"] == "completed"
+    assert student_notifications_response.status_code == 200
+    student_notifications = student_notifications_response.json()
+    assert any(
+        notification["title"] == "Заняття завершено"
+        for notification in student_notifications
+    )
 
 
 @pytest.mark.asyncio

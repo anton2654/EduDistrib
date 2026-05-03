@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -18,6 +18,7 @@ from app.application.interfaces.enrollment_repository import (
     BookingProjection,
     DisciplineAnalyticsProjection,
     EnrollmentRepositoryInterface,
+    NotificationProjection,
     ReviewProjection,
     TeacherRatingSummary,
     TeacherSlotBookingProjection,
@@ -27,16 +28,28 @@ from app.application.interfaces.enrollment_repository import (
 from app.domain.entities.booking import Booking, BookingStatus
 from app.domain.entities.city import City
 from app.domain.entities.discipline import Discipline
+from app.domain.entities.notification import Notification
 from app.domain.entities.review import Review
 from app.domain.entities.student import Student
 from app.domain.entities.teacher import Teacher
 from app.domain.entities.teacher_discipline import TeacherDiscipline
 from app.domain.entities.teacher_slot import TeacherSlot
+from app.domain.entities.user_account import UserAccount
 
 
 class EnrollmentRepository(EnrollmentRepositoryInterface):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    @staticmethod
+    def _to_notification_projection(notification: Notification) -> NotificationProjection:
+        return NotificationProjection(
+            id=notification.id,
+            title=notification.title,
+            message=notification.message,
+            is_read=notification.is_read,
+            created_at=notification.created_at,
+        )
 
     @staticmethod
     def _to_utilization_percent(reserved_seats: int, capacity_total: int) -> float:
@@ -172,6 +185,32 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
         )
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_user_account_id_by_student_id(self, student_id: int) -> int | None:
+        stmt = select(UserAccount.id).where(UserAccount.student_id == student_id)
+        result = await self._session.execute(stmt)
+        value = result.scalar_one_or_none()
+        return int(value) if value is not None else None
+
+    async def get_user_account_id_by_teacher_id(self, teacher_id: int) -> int | None:
+        stmt = select(UserAccount.id).where(UserAccount.teacher_id == teacher_id)
+        result = await self._session.execute(stmt)
+        value = result.scalar_one_or_none()
+        return int(value) if value is not None else None
+
+    async def list_active_slot_booking_user_account_ids(self, slot_id: int) -> list[int]:
+        stmt = (
+            select(UserAccount.id)
+            .join(Student, Student.id == UserAccount.student_id)
+            .join(Booking, Booking.student_id == Student.id)
+            .where(
+                Booking.slot_id == slot_id,
+                Booking.status == BookingStatus.ACTIVE,
+            )
+            .order_by(UserAccount.id)
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        return [int(value) for value in rows]
 
     async def teacher_has_discipline(self, teacher_id: int, discipline_id: int) -> bool:
         stmt = select(TeacherDiscipline).where(
@@ -460,6 +499,8 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
         teacher_id: int | None = None,
         starts_from: datetime | None = None,
         ends_to: datetime | None = None,
+        skip: int = 0,
+        limit: int = 5,
     ) -> list[TeacherAnalyticsProjection]:
         conditions = self._build_slot_filter_conditions(
             city_id=city_id,
@@ -527,9 +568,14 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 func.coalesce(func.sum(slot_stats_subquery.c.reserved_seats), 0).desc(),
                 slot_stats_subquery.c.teacher_name,
             )
+            .offset(skip)
+            .limit(limit)
         )
 
         rows = (await self._session.execute(teacher_aggregate_stmt)).mappings().all()
+        teacher_ids = [int(row["teacher_id"]) for row in rows]
+        rating_summaries = await self.get_teacher_rating_summaries(teacher_ids)
+
         return [
             TeacherAnalyticsProjection(
                 teacher_id=row["teacher_id"],
@@ -545,6 +591,9 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                     int(row["bookings_total"] or 0),
                     int(row["capacity_total"] or 0),
                 ),
+                average_rating=rating_summary.average_rating
+                if (rating_summary := rating_summaries.get(int(row["teacher_id"]))) is not None
+                else None,
             )
             for row in rows
         ]
@@ -556,6 +605,8 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
         teacher_id: int | None = None,
         starts_from: datetime | None = None,
         ends_to: datetime | None = None,
+        skip: int = 0,
+        limit: int = 5,
     ) -> list[DisciplineAnalyticsProjection]:
         conditions = self._build_slot_filter_conditions(
             city_id=city_id,
@@ -615,6 +666,8 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 func.coalesce(func.sum(slot_stats_subquery.c.reserved_seats), 0).desc(),
                 slot_stats_subquery.c.discipline_name,
             )
+            .offset(skip)
+            .limit(limit)
         )
 
         rows = (await self._session.execute(discipline_aggregate_stmt)).mappings().all()
@@ -907,6 +960,67 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
             )
             for row in rows
         ]
+
+    async def create_notification(
+        self,
+        *,
+        user_id: int,
+        title: str,
+        message: str,
+    ) -> Notification:
+        notification = Notification(
+            user_id=user_id,
+            title=title,
+            message=message,
+            is_read=False,
+        )
+        self._session.add(notification)
+        await self._session.commit()
+        await self._session.refresh(notification)
+        return notification
+
+    async def get_user_notifications(self, user_id: int) -> list[NotificationProjection]:
+        stmt = (
+            select(Notification)
+            .where(Notification.user_id == user_id)
+            .order_by(Notification.created_at.desc(), Notification.id.desc())
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        return [self._to_notification_projection(notification) for notification in rows]
+
+    async def mark_notification_as_read(
+        self,
+        notification_id: int,
+        user_id: int,
+    ) -> NotificationProjection | None:
+        stmt = select(Notification).where(
+            Notification.id == notification_id,
+            Notification.user_id == user_id,
+        )
+        notification = (await self._session.execute(stmt)).scalar_one_or_none()
+        if notification is None:
+            return None
+
+        if not notification.is_read:
+            notification.is_read = True
+            await self._session.commit()
+            await self._session.refresh(notification)
+
+        return self._to_notification_projection(notification)
+
+    async def delete_user_notifications(
+        self,
+        user_id: int,
+        only_read: bool = False,
+    ) -> int:
+        stmt = delete(Notification).where(Notification.user_id == user_id)
+        if only_read:
+            stmt = stmt.where(Notification.is_read.is_(True))
+
+        result = await self._session.execute(stmt)
+        await self._session.commit()
+
+        return int(result.rowcount or 0)
 
     async def update_booking_status(self, booking: Booking, status: BookingStatus) -> Booking:
         booking.status = status

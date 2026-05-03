@@ -6,6 +6,7 @@ from app.presentation.api.exception_handlers import register_exception_handlers
 from app.presentation.api.lifespan import app_lifespan
 from app.presentation.api.routers.auth import router as auth_router
 from app.presentation.api.routers.enrollment import router as enrollment_router
+from app.presentation.api.routers.notifications import router as notifications_router
 from app.presentation.api.routers.teacher_slots import router as teacher_slots_router
 from app.presentation.api.routers.tasks import router as tasks_router
 
@@ -28,6 +29,7 @@ register_exception_handlers(app)
 app.include_router(tasks_router, prefix="/api/v1")
 app.include_router(enrollment_router, prefix="/api/v1")
 app.include_router(teacher_slots_router, prefix="/api/v1")
+app.include_router(notifications_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pydantic import EmailStr
 
-# Common typo domains that frequently appear instead of valid providers.
 COMMON_EMAIL_DOMAIN_TYPOS: dict[str, str] = {
     "gmail.co": "gmail.com",
     "gmail.con": "gmail.com",
@@ -13,13 +12,9 @@ COMMON_EMAIL_DOMAIN_TYPOS: dict[str, str] = {
     "outllok.com": "outlook.com",
 }
 
-# Known providers that only use one canonical domain.
 CANONICAL_EMAIL_PROVIDER_DOMAINS: dict[str, str] = {
     "gmail": "gmail.com",
     "outlook": "outlook.com",
-    "hotmail": "hotmail.com",
-    "icloud": "icloud.com",
-    "yahoo": "yahoo.com",
 }
 
 

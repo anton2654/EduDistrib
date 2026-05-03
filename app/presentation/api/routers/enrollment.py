@@ -52,6 +52,7 @@ from app.application.services.enrollment_service import (
     StudentTimeConflictError,
     StudentNotFoundError,
     TeacherNotFoundError,
+    TeacherSlotAccessError,
 )
 from app.domain.entities.teacher import Teacher
 from app.domain.entities.booking import BookingStatus
@@ -65,6 +66,7 @@ EnrollmentServiceDependency = Annotated[EnrollmentService, Depends(get_enrollmen
 AdminUserDependency = Annotated[UserAccount, Depends(require_roles(UserRole.ADMIN))]
 StudentUserDependency = Annotated[UserAccount, Depends(get_student_user)]
 StudentOnlyUserDependency = Annotated[UserAccount, Depends(require_roles(UserRole.STUDENT))]
+TeacherOnlyUserDependency = Annotated[UserAccount, Depends(require_roles(UserRole.TEACHER))]
 
 
 def _teacher_to_dto(
@@ -81,7 +83,10 @@ def _teacher_to_dto(
     )
 
 
-def _available_slot_to_dto(slot: AvailableSlotProjection) -> AvailableSlotReadDTO:
+def _available_slot_to_dto(
+    slot: AvailableSlotProjection,
+    rating_summary: TeacherRatingSummary | None = None,
+) -> AvailableSlotReadDTO:
     available_seats = max(slot.capacity - slot.reserved_seats, 0)
     return AvailableSlotReadDTO(
         slot_id=slot.slot_id,
@@ -97,6 +102,16 @@ def _available_slot_to_dto(slot: AvailableSlotProjection) -> AvailableSlotReadDT
         capacity=slot.capacity,
         reserved_seats=slot.reserved_seats,
         available_seats=available_seats,
+        average_rating=(
+            rating_summary.average_rating
+            if rating_summary is not None
+            else slot.average_rating
+        ),
+        reviews_count=(
+            rating_summary.reviews_count
+            if rating_summary is not None
+            else slot.reviews_count
+        ),
     )
 
 
@@ -169,6 +184,7 @@ def _teacher_analytics_to_dto(item: TeacherAnalyticsProjection) -> TeacherAnalyt
         capacity_total=item.capacity_total,
         reserved_seats_total=item.reserved_seats_total,
         utilization_rate_percent=item.utilization_rate_percent,
+        average_rating=item.average_rating,
     )
 
 
@@ -318,7 +334,57 @@ async def list_available_slots(
     except (CityNotFoundError, DisciplineNotFoundError, TeacherNotFoundError) as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
-    return [_available_slot_to_dto(slot) for slot in slots]
+    ratings = await service.get_teacher_rating_summaries(
+        [slot.teacher_id for slot in slots],
+    )
+    return [
+        _available_slot_to_dto(slot, ratings.get(slot.teacher_id))
+        for slot in slots
+    ]
+
+
+@router.post("/slots/{slot_id}/complete", response_model=TeacherSlotReadDTO)
+async def complete_teacher_slot(
+    slot_id: int,
+    service: EnrollmentServiceDependency,
+    current_user: TeacherOnlyUserDependency,
+) -> TeacherSlotReadDTO:
+    if current_user.teacher_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Teacher account is not linked to teacher profile.",
+        )
+
+    try:
+        slot = await service.complete_teacher_slot(
+            slot_id=slot_id,
+            teacher_id=current_user.teacher_id,
+        )
+    except SlotNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except TeacherSlotAccessError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+
+    return TeacherSlotReadDTO.model_validate(slot)
+
+
+@router.get("/teachers/{teacher_id}/reviews", response_model=list[ReviewListReadDTO])
+async def list_teacher_reviews(
+    teacher_id: int,
+    service: EnrollmentServiceDependency,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[ReviewListReadDTO]:
+    try:
+        rows = await service.list_reviews(
+            teacher_id=teacher_id,
+            skip=skip,
+            limit=limit,
+        )
+    except TeacherNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    return [_review_projection_to_dto(row) for row in rows]
 
 
 @router.get("/analytics/overview", response_model=AnalyticsOverviewReadDTO)
@@ -356,6 +422,8 @@ async def list_teacher_analytics(
     teacher_id: int | None = Query(default=None, gt=0),
     starts_from: datetime | None = Query(default=None),
     ends_to: datetime | None = Query(default=None),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=5, ge=1, le=50),
 ) -> list[TeacherAnalyticsReadDTO]:
     try:
         rows = await service.list_teacher_analytics(
@@ -364,6 +432,8 @@ async def list_teacher_analytics(
             teacher_id=teacher_id,
             starts_from=starts_from,
             ends_to=ends_to,
+            skip=skip,
+            limit=limit,
         )
     except (CityNotFoundError, DisciplineNotFoundError, TeacherNotFoundError) as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
@@ -382,6 +452,8 @@ async def list_discipline_analytics(
     teacher_id: int | None = Query(default=None, gt=0),
     starts_from: datetime | None = Query(default=None),
     ends_to: datetime | None = Query(default=None),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=5, ge=1, le=50),
 ) -> list[DisciplineAnalyticsReadDTO]:
     try:
         rows = await service.list_discipline_analytics(
@@ -390,6 +462,8 @@ async def list_discipline_analytics(
             teacher_id=teacher_id,
             starts_from=starts_from,
             ends_to=ends_to,
+            skip=skip,
+            limit=limit,
         )
     except (CityNotFoundError, DisciplineNotFoundError, TeacherNotFoundError) as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error

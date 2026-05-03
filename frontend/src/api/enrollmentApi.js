@@ -199,6 +199,8 @@ export async function listTeacherAnalytics({
   teacherId,
   startsFrom,
   endsTo,
+  skip,
+  limit,
 } = {}) {
   return request(
     ENROLLMENT_BASE_URL,
@@ -208,6 +210,8 @@ export async function listTeacherAnalytics({
       teacher_id: teacherId,
       starts_from: startsFrom,
       ends_to: endsTo,
+      skip,
+      limit,
     })}`,
   );
 }
@@ -218,6 +222,8 @@ export async function listDisciplineAnalytics({
   teacherId,
   startsFrom,
   endsTo,
+  skip,
+  limit,
 } = {}) {
   return request(
     ENROLLMENT_BASE_URL,
@@ -227,6 +233,8 @@ export async function listDisciplineAnalytics({
       teacher_id: teacherId,
       starts_from: startsFrom,
       ends_to: endsTo,
+      skip,
+      limit,
     })}`,
   );
 }
@@ -397,6 +405,33 @@ export async function listReviews({
   );
 }
 
+export async function listTeacherReviews(teacherId, { skip, limit } = {}) {
+  return request(
+    ENROLLMENT_BASE_URL,
+    `/teachers/${teacherId}/reviews${toQuery({ skip, limit })}`,
+  );
+}
+
+export async function listMyNotifications() {
+  return request(API_ROOT_URL, "/notifications/me");
+}
+
+export async function clearMyNotifications({ onlyRead = false } = {}) {
+  return request(
+    API_ROOT_URL,
+    `/notifications/me${toQuery({ only_read: onlyRead })}`,
+    {
+      method: "DELETE",
+    },
+  );
+}
+
+export async function markNotificationAsRead(notificationId) {
+  return request(API_ROOT_URL, `/notifications/${notificationId}/read`, {
+    method: "PATCH",
+  });
+}
+
 export async function cancelTeacherSlotBooking(slotId, bookingId) {
   return request(
     TEACHER_BASE_URL,
@@ -419,6 +454,12 @@ export async function completeTeacherSlotBooking(slotId, bookingId) {
 
 export async function completeAllTeacherSlotBookings(slotId) {
   return request(TEACHER_BASE_URL, `/slots/${slotId}/bookings/complete-all`, {
+    method: "POST",
+  });
+}
+
+export async function completeTeacherSlot(slotId) {
+  return request(ENROLLMENT_BASE_URL, `/slots/${slotId}/complete`, {
     method: "POST",
   });
 }

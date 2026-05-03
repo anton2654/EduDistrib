@@ -2,6 +2,7 @@ from app.domain.entities.base import Base
 from app.domain.entities.booking import Booking, BookingStatus
 from app.domain.entities.city import City
 from app.domain.entities.discipline import Discipline
+from app.domain.entities.notification import Notification
 from app.domain.entities.review import Review
 from app.domain.entities.student import Student
 from app.domain.entities.task import Task
@@ -16,6 +17,7 @@ __all__ = [
 	"BookingStatus",
 	"City",
 	"Discipline",
+	"Notification",
 	"Review",
 	"Student",
 	"Task",

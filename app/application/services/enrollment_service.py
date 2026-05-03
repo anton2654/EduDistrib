@@ -18,6 +18,7 @@ from app.application.interfaces.enrollment_repository import (
     BookingProjection,
     DisciplineAnalyticsProjection,
     EnrollmentRepositoryInterface,
+    NotificationProjection,
     ReviewProjection,
     TeacherRatingSummary,
     TeacherSlotBookingProjection,
@@ -31,6 +32,12 @@ from app.domain.entities.review import Review
 from app.domain.entities.student import Student
 from app.domain.entities.teacher import Teacher
 from app.domain.entities.teacher_slot import TeacherSlot
+
+
+def _format_notification_datetime(value: datetime) -> str:
+    if value.tzinfo is not None:
+        return value.astimezone().strftime("%d.%m.%Y %H:%M")
+    return value.strftime("%d.%m.%Y %H:%M")
 
 
 class EnrollmentError(Exception):
@@ -145,6 +152,11 @@ class AnalyticsFilterRangeError(EnrollmentError):
         super().__init__("Analytics filter ends_to must be later than starts_from.")
 
 
+class NotificationNotFoundError(EnrollmentError):
+    def __init__(self, notification_id: int) -> None:
+        super().__init__(f"Notification with id {notification_id} was not found.")
+
+
 class EnrollmentService:
     def __init__(self, repository: EnrollmentRepositoryInterface) -> None:
         self._repository = repository
@@ -178,16 +190,6 @@ class EnrollmentService:
         skip: int = 0,
         limit: int = 50,
     ) -> list[Teacher]:
-        if city_id is not None:
-            city = await self._repository.get_city_by_id(city_id)
-            if city is None:
-                raise CityNotFoundError(city_id)
-
-        if discipline_id is not None:
-            discipline = await self._repository.get_discipline_by_id(discipline_id)
-            if discipline is None:
-                raise DisciplineNotFoundError(discipline_id)
-
         normalized_search_query = (
             search_query.strip() if search_query is not None else None
         )
@@ -207,6 +209,32 @@ class EnrollmentService:
         teacher_ids: list[int],
     ) -> dict[int, TeacherRatingSummary]:
         return await self._repository.get_teacher_rating_summaries(teacher_ids)
+
+    async def list_user_notifications(self, user_id: int) -> list[NotificationProjection]:
+        return await self._repository.get_user_notifications(user_id)
+
+    async def clear_user_notifications(
+        self,
+        user_id: int,
+        only_read: bool = False,
+    ) -> int:
+        return await self._repository.delete_user_notifications(
+            user_id=user_id,
+            only_read=only_read,
+        )
+
+    async def mark_user_notification_as_read(
+        self,
+        notification_id: int,
+        user_id: int,
+    ) -> NotificationProjection:
+        notification = await self._repository.mark_notification_as_read(
+            notification_id=notification_id,
+            user_id=user_id,
+        )
+        if notification is None:
+            raise NotificationNotFoundError(notification_id)
+        return notification
 
     async def create_student(self, student_in: StudentCreateDTO) -> Student:
         city = await self._repository.get_city_by_id(student_in.city_id)
@@ -290,6 +318,16 @@ class EnrollmentService:
 
         active_bookings = await self._repository.count_slot_bookings(slot_id)
 
+        starts_changed = slot_in.starts_at is not None and slot_in.starts_at != slot.starts_at
+        ends_changed = slot_in.ends_at is not None and slot_in.ends_at != slot.ends_at
+        description_changed = (
+            slot_in.description is not None and slot_in.description != slot.description
+        )
+        discipline_changed = (
+            slot_in.discipline_id is not None and slot_in.discipline_id != slot.discipline_id
+        )
+        should_notify_students = starts_changed or ends_changed or description_changed
+
         if slot_in.capacity is not None and slot_in.capacity < active_bookings:
             raise SlotCapacityBelowReservedError(
                 slot_id=slot_id,
@@ -298,15 +336,6 @@ class EnrollmentService:
             )
 
         if active_bookings > 0:
-            starts_changed = slot_in.starts_at is not None and slot_in.starts_at != slot.starts_at
-            ends_changed = slot_in.ends_at is not None and slot_in.ends_at != slot.ends_at
-            discipline_changed = (
-                slot_in.discipline_id is not None and slot_in.discipline_id != slot.discipline_id
-            )
-
-            if starts_changed or ends_changed:
-                raise SlotUpdateLockedByActiveBookingsError(slot_id, "time range")
-
             if discipline_changed:
                 raise SlotUpdateLockedByActiveBookingsError(slot_id, "discipline")
 
@@ -315,7 +344,54 @@ class EnrollmentService:
         if new_ends_at <= new_starts_at:
             raise SlotTimeRangeError
 
-        return await self._repository.update_slot(slot, slot_in)
+        active_student_user_ids: list[int] = []
+        if should_notify_students:
+            active_student_user_ids = await self._repository.list_active_slot_booking_user_account_ids(
+                slot_id,
+            )
+
+        updated_slot = await self._repository.update_slot(slot, slot_in)
+
+        if should_notify_students and active_student_user_ids:
+            discipline = await self._repository.get_discipline_by_id(updated_slot.discipline_id)
+            discipline_name = discipline.name if discipline is not None else "заняття"
+            starts_at_value = _format_notification_datetime(updated_slot.starts_at)
+            await self._create_notifications_for_users(
+                user_ids=active_student_user_ids,
+                title="Зміна деталей заняття",
+                message=(
+                    f"Увага: деталі вашого заняття з {discipline_name} на {starts_at_value} "
+                    "було змінено викладачем."
+                ),
+            )
+
+        return updated_slot
+
+    async def complete_teacher_slot(self, slot_id: int, teacher_id: int) -> TeacherSlot:
+        slot = await self._repository.get_slot_by_id(slot_id)
+        if slot is None:
+            raise SlotNotFoundError(slot_id)
+
+        if slot.teacher_id != teacher_id:
+            raise TeacherSlotAccessError(slot_id)
+
+        active_student_user_ids = await self._repository.list_active_slot_booking_user_account_ids(
+            slot_id,
+        )
+
+        await self._repository.complete_active_bookings_for_slot(slot_id)
+        await self._notify_students_about_completed_lesson(
+            teacher_id=teacher_id,
+            user_ids=active_student_user_ids,
+        )
+
+        if not slot.is_active:
+            return slot
+
+        return await self._repository.update_slot(
+            slot,
+            TeacherSlotUpdateDTO(is_active=False),
+        )
 
     async def delete_slot_for_teacher(self, teacher_id: int, slot_id: int) -> None:
         slot = await self._repository.get_slot_by_id(slot_id)
@@ -325,7 +401,25 @@ class EnrollmentService:
         if slot.teacher_id != teacher_id:
             raise TeacherSlotAccessError(slot_id)
 
+        active_student_user_ids = await self._repository.list_active_slot_booking_user_account_ids(
+            slot_id,
+        )
+        teacher = await self._repository.get_teacher_by_id(teacher_id)
+        discipline = await self._repository.get_discipline_by_id(slot.discipline_id)
         await self._repository.delete_slot(slot)
+
+        if active_student_user_ids:
+            teacher_name = teacher.full_name if teacher is not None else "викладач"
+            discipline_name = discipline.name if discipline is not None else "заняття"
+            starts_at_value = _format_notification_datetime(slot.starts_at)
+            await self._create_notifications_for_users(
+                user_ids=active_student_user_ids,
+                title="Заняття скасовано",
+                message=(
+                    f"Викладач {teacher_name} скасував заняття з {discipline_name} "
+                    f"на {starts_at_value}. Статус змінено на Скасовано."
+                ),
+            )
 
     async def list_available_slots(
         self,
@@ -335,21 +429,6 @@ class EnrollmentService:
         skip: int = 0,
         limit: int = 50,
     ) -> list[AvailableSlotProjection]:
-        if city_id is not None:
-            city = await self._repository.get_city_by_id(city_id)
-            if city is None:
-                raise CityNotFoundError(city_id)
-
-        if discipline_id is not None:
-            discipline = await self._repository.get_discipline_by_id(discipline_id)
-            if discipline is None:
-                raise DisciplineNotFoundError(discipline_id)
-
-        if teacher_id is not None:
-            teacher = await self._repository.get_teacher_by_id(teacher_id)
-            if teacher is None:
-                raise TeacherNotFoundError(teacher_id)
-
         return await self._repository.list_available_slots(
             city_id=city_id,
             discipline_id=discipline_id,
@@ -388,6 +467,8 @@ class EnrollmentService:
         teacher_id: int | None = None,
         starts_from: datetime | None = None,
         ends_to: datetime | None = None,
+        skip: int = 0,
+        limit: int = 5,
     ) -> list[TeacherAnalyticsProjection]:
         await self._validate_analytics_filters(
             city_id=city_id,
@@ -402,6 +483,8 @@ class EnrollmentService:
             teacher_id=teacher_id,
             starts_from=starts_from,
             ends_to=ends_to,
+            skip=skip,
+            limit=limit,
         )
 
     async def list_discipline_analytics(
@@ -411,6 +494,8 @@ class EnrollmentService:
         teacher_id: int | None = None,
         starts_from: datetime | None = None,
         ends_to: datetime | None = None,
+        skip: int = 0,
+        limit: int = 5,
     ) -> list[DisciplineAnalyticsProjection]:
         await self._validate_analytics_filters(
             city_id=city_id,
@@ -425,6 +510,8 @@ class EnrollmentService:
             teacher_id=teacher_id,
             starts_from=starts_from,
             ends_to=ends_to,
+            skip=skip,
+            limit=limit,
         )
 
     async def create_booking(self, booking_in: BookingCreateDTO) -> Booking:
@@ -456,12 +543,29 @@ class EnrollmentService:
             raise SlotFullError(slot.id)
 
         try:
-            return await self._repository.create_booking(
+            created_booking = await self._repository.create_booking(
                 booking_in.student_id,
                 booking_in.slot_id,
             )
         except IntegrityError as error:
             raise DuplicateBookingError(booking_in.student_id, booking_in.slot_id) from error
+
+        if booked_seats + 1 == slot.capacity:
+            teacher_user_id = await self._repository.get_user_account_id_by_teacher_id(
+                slot.teacher_id,
+            )
+            if teacher_user_id is not None:
+                starts_at_value = _format_notification_datetime(slot.starts_at)
+                await self._repository.create_notification(
+                    user_id=teacher_user_id,
+                    title="Групу набрано",
+                    message=(
+                        f"Ваша група на {starts_at_value} повністю набрана "
+                        f"({slot.capacity}/{slot.capacity} місць)."
+                    ),
+                )
+
+        return created_booking
 
     async def list_bookings(
         self,
@@ -599,7 +703,17 @@ class EnrollmentService:
         if slot.teacher_id != teacher_id:
             raise TeacherSlotAccessError(slot_id)
 
-        return await self._repository.complete_active_bookings_for_slot(slot_id)
+        active_student_user_ids = await self._repository.list_active_slot_booking_user_account_ids(
+            slot_id,
+        )
+        completed_count = await self._repository.complete_active_bookings_for_slot(slot_id)
+
+        await self._notify_students_about_completed_lesson(
+            teacher_id=teacher_id,
+            user_ids=active_student_user_ids,
+        )
+
+        return completed_count
 
     async def cancel_booking_for_teacher(
         self,
@@ -657,7 +771,21 @@ class EnrollmentService:
                 BookingStatus.COMPLETED,
             )
 
-        return await self._repository.update_booking_status(booking, BookingStatus.COMPLETED)
+        completed_booking = await self._repository.update_booking_status(
+            booking,
+            BookingStatus.COMPLETED,
+        )
+
+        student_user_id = await self._repository.get_user_account_id_by_student_id(
+            completed_booking.student_id,
+        )
+        if student_user_id is not None:
+            await self._notify_students_about_completed_lesson(
+                teacher_id=teacher_id,
+                user_ids=[student_user_id],
+            )
+
+        return completed_booking
 
     async def _validate_analytics_filters(
         self,
@@ -685,3 +813,37 @@ class EnrollmentService:
 
         if starts_from is not None and ends_to is not None and ends_to <= starts_from:
             raise AnalyticsFilterRangeError
+
+    async def _create_notifications_for_users(
+        self,
+        *,
+        user_ids: list[int],
+        title: str,
+        message: str,
+    ) -> None:
+        for user_id in sorted(set(user_ids)):
+            await self._repository.create_notification(
+                user_id=user_id,
+                title=title,
+                message=message,
+            )
+
+    async def _notify_students_about_completed_lesson(
+        self,
+        *,
+        teacher_id: int,
+        user_ids: list[int],
+    ) -> None:
+        if not user_ids:
+            return
+
+        teacher = await self._repository.get_teacher_by_id(teacher_id)
+        teacher_name = teacher.full_name if teacher is not None else "викладач"
+        await self._create_notifications_for_users(
+            user_ids=user_ids,
+            title="Заняття завершено",
+            message=(
+                f"Ваше заняття з {teacher_name} завершено. Будь ласка, "
+                "оцініть викладача та залиште відгук."
+            ),
+        )

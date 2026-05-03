@@ -214,6 +214,8 @@ class AvailableSlotReadDTO(BaseModel):
     capacity: int
     reserved_seats: int
     available_seats: int
+    average_rating: float | None = None
+    reviews_count: int = 0
 
 
 class BookingCreateDTO(BaseModel):
@@ -305,6 +307,14 @@ class ReviewListReadDTO(BaseModel):
     created_at: datetime
 
 
+class NotificationReadDTO(BaseModel):
+    id: int
+    title: str
+    message: str
+    is_read: bool
+    created_at: datetime
+
+
 class AnalyticsOverviewReadDTO(BaseModel):
     total_cities: int
     total_disciplines: int
@@ -329,6 +339,7 @@ class TeacherAnalyticsReadDTO(BaseModel):
     capacity_total: int
     reserved_seats_total: int
     utilization_rate_percent: float = Field(ge=0, le=100)
+    average_rating: float | None = None
 
 
 class DisciplineAnalyticsReadDTO(BaseModel):

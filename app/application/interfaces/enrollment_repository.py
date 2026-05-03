@@ -13,6 +13,7 @@ from app.application.dto.enrollment_dto import (
 from app.domain.entities.booking import Booking, BookingStatus
 from app.domain.entities.city import City
 from app.domain.entities.discipline import Discipline
+from app.domain.entities.notification import Notification
 from app.domain.entities.review import Review
 from app.domain.entities.student import Student
 from app.domain.entities.teacher import Teacher
@@ -33,6 +34,8 @@ class AvailableSlotProjection:
     description: str | None
     capacity: int
     reserved_seats: int
+    average_rating: float | None = None
+    reviews_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,7 @@ class TeacherAnalyticsProjection:
     capacity_total: int
     reserved_seats_total: int
     utilization_rate_percent: float
+    average_rating: float | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +144,15 @@ class ReviewProjection:
     discipline_name: str
     rating: int
     comment: str | None
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class NotificationProjection:
+    id: int
+    title: str
+    message: str
+    is_read: bool
     created_at: datetime
 
 
@@ -192,6 +205,18 @@ class EnrollmentRepositoryInterface(ABC):
 
     @abstractmethod
     async def get_teacher_by_id(self, teacher_id: int) -> Teacher | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_user_account_id_by_student_id(self, student_id: int) -> int | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_user_account_id_by_teacher_id(self, teacher_id: int) -> int | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_active_slot_booking_user_account_ids(self, slot_id: int) -> list[int]:
         raise NotImplementedError
 
     @abstractmethod
@@ -264,6 +289,8 @@ class EnrollmentRepositoryInterface(ABC):
         teacher_id: int | None = None,
         starts_from: datetime | None = None,
         ends_to: datetime | None = None,
+        skip: int = 0,
+        limit: int = 5,
     ) -> list[TeacherAnalyticsProjection]:
         raise NotImplementedError
 
@@ -275,6 +302,8 @@ class EnrollmentRepositoryInterface(ABC):
         teacher_id: int | None = None,
         starts_from: datetime | None = None,
         ends_to: datetime | None = None,
+        skip: int = 0,
+        limit: int = 5,
     ) -> list[DisciplineAnalyticsProjection]:
         raise NotImplementedError
 
@@ -355,6 +384,36 @@ class EnrollmentRepositoryInterface(ABC):
         skip: int = 0,
         limit: int = 50,
     ) -> list[ReviewProjection]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def create_notification(
+        self,
+        *,
+        user_id: int,
+        title: str,
+        message: str,
+    ) -> Notification:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_user_notifications(self, user_id: int) -> list[NotificationProjection]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def mark_notification_as_read(
+        self,
+        notification_id: int,
+        user_id: int,
+    ) -> NotificationProjection | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_user_notifications(
+        self,
+        user_id: int,
+        only_read: bool = False,
+    ) -> int:
         raise NotImplementedError
 
     @abstractmethod

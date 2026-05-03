@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  clearMyNotifications,
   cancelTeacherSlotBooking,
   cancelBooking,
   clearAccessToken,
   completeAllTeacherSlotBookings,
+  completeTeacherSlot,
   completeTeacherSlotBooking,
   createReview,
   createBooking,
@@ -13,14 +15,15 @@ import {
   deleteTeacherSlot,
   getCurrentAccount,
   getOverviewAnalytics,
-  getAccessToken,
   listAccounts,
   listAvailableSlots,
   listBookings,
   listCities,
   listDisciplineAnalytics,
   listDisciplines,
-  listReviews,
+  listMyNotifications,
+  markNotificationAsRead,
+  listTeacherReviews,
   listTeacherSlotBookings,
   listTeacherAnalytics,
   listTeacherSlots,
@@ -32,6 +35,7 @@ import {
   updateTeacherSlot,
 } from "./api/enrollmentApi";
 import {
+  formatDateTime,
   formatDateTimeRange,
   toDateTimeLocalInputValue,
   toIsoFromLocalInput,
@@ -40,6 +44,7 @@ import "./App.css";
 
 const TOKEN_STORAGE_KEY = "distributor_access_token";
 const ADMIN_ACCOUNTS_PAGE_SIZE = 5;
+const ADMIN_ANALYTICS_PAGE_SIZE = 5;
 const STUDENT_SLOTS_PAGE_SIZE = 6;
 const TEACHER_SLOTS_PAGE_SIZE = 6;
 const STUDENT_BOOKINGS_PAGE_SIZE = 6;
@@ -62,6 +67,20 @@ const CANONICAL_EMAIL_PROVIDER_DOMAINS = {
 
 function getTotalPages(itemsCount, pageSize) {
   return Math.max(Math.ceil(itemsCount / pageSize), 1);
+}
+
+function formatTeacherRatingSummary(averageRating, reviewsCount) {
+  const normalizedReviewsCount = Number(reviewsCount ?? 0);
+  if (averageRating == null || normalizedReviewsCount <= 0) {
+    return "⭐ - (0)";
+  }
+
+  return `⭐ ${Number(averageRating).toFixed(1)} (${normalizedReviewsCount})`;
+}
+
+function getReviewStars(rating) {
+  const safeRating = Math.max(Math.min(Number(rating) || 0, 5), 1);
+  return "⭐".repeat(safeRating);
 }
 
 function getEmailValidationMessage(emailValue, { required = true } = {}) {
@@ -152,11 +171,13 @@ const EMPTY_ADMIN_ANALYTICS_FILTERS = {
 
 function App() {
   const userMenuWrapRef = useRef(null);
+  const notificationsWrapRef = useRef(null);
 
   const [currentPath, setCurrentPath] = useState(() =>
     typeof window !== "undefined" ? window.location.pathname || "/" : "/",
   );
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [profileFocusSection, setProfileFocusSection] = useState("profile");
 
   const [cities, setCities] = useState([]);
@@ -199,6 +220,11 @@ function App() {
   const [overviewAnalytics, setOverviewAnalytics] = useState(null);
   const [teacherAnalyticsRows, setTeacherAnalyticsRows] = useState([]);
   const [disciplineAnalyticsRows, setDisciplineAnalyticsRows] = useState([]);
+  const [teacherAnalyticsPage, setTeacherAnalyticsPage] = useState(1);
+  const [disciplineAnalyticsPage, setDisciplineAnalyticsPage] = useState(1);
+  const [hasMoreTeacherAnalytics, setHasMoreTeacherAnalytics] = useState(false);
+  const [hasMoreDisciplineAnalytics, setHasMoreDisciplineAnalytics] =
+    useState(false);
   const [adminAccountsSkip, setAdminAccountsSkip] = useState(0);
   const [hasMoreAdminAccounts, setHasMoreAdminAccounts] = useState(false);
   const [profileUpdateDraft, setProfileUpdateDraft] = useState(
@@ -208,6 +234,19 @@ function App() {
   const [isTeacherReviewsLoading, setIsTeacherReviewsLoading] = useState(false);
   const [activeTeacherReviewTargetId, setActiveTeacherReviewTargetId] =
     useState(null);
+  const [teacherDetailsModalContext, setTeacherDetailsModalContext] =
+    useState(null);
+  const [teacherDetailsModalReviews, setTeacherDetailsModalReviews] = useState(
+    [],
+  );
+  const [
+    isTeacherDetailsModalReviewsLoading,
+    setIsTeacherDetailsModalReviewsLoading,
+  ] = useState(false);
+  const [
+    showAllTeacherDetailsModalReviews,
+    setShowAllTeacherDetailsModalReviews,
+  ] = useState(false);
 
   const [studentBookingTab, setStudentBookingTab] = useState("upcoming");
   const [upcomingBookingsPage, setUpcomingBookingsPage] = useState(1);
@@ -216,6 +255,10 @@ function App() {
   const [reviewDraftByBookingId, setReviewDraftByBookingId] = useState({});
 
   const [currentAccount, setCurrentAccount] = useState(null);
+  const [notifications, setNotifications] = useState([]);
+  const [isNotificationsLoading, setIsNotificationsLoading] = useState(false);
+  const [notificationActionId, setNotificationActionId] = useState(null);
+  const [isNotificationsClearing, setIsNotificationsClearing] = useState(false);
 
   const [loginDraft, setLoginDraft] = useState(EMPTY_LOGIN);
   const [studentRegisterDraft, setStudentRegisterDraft] =
@@ -309,6 +352,11 @@ function App() {
     activeTeacherSlotsPage < totalActiveTeacherSlotsPages;
   const hasMoreTeacherSlotHistory =
     teacherSlotHistoryPage < totalTeacherSlotHistoryPages;
+
+  const hasUnreadNotifications = useMemo(
+    () => notifications.some((notification) => !notification.is_read),
+    [notifications],
+  );
 
   const dashboardStats = useMemo(() => {
     if (!role) {
@@ -449,24 +497,21 @@ function App() {
     [expandedTeacherSlotId, teacherSlotBookingsBySlotId],
   );
 
-  const teacherRatingById = useMemo(
-    () =>
-      new Map(
-        teachers
-          .filter((teacher) => teacher.average_rating != null)
-          .map((teacher) => [teacher.id, teacher.average_rating]),
-      ),
-    [teachers],
+  const cityNameById = useMemo(
+    () => new Map(cities.map((city) => [city.id, city.name])),
+    [cities],
   );
 
-  const selectedTeacherForReviews = useMemo(() => {
-    if (!studentFilters.teacherId) {
-      return null;
+  const displayedTeacherDetailsModalReviews = useMemo(() => {
+    if (showAllTeacherDetailsModalReviews) {
+      return teacherDetailsModalReviews;
     }
-    return teachers.find(
-      (teacher) => teacher.id === Number(studentFilters.teacherId),
-    );
-  }, [studentFilters.teacherId, teachers]);
+
+    return teacherDetailsModalReviews.slice(0, 5);
+  }, [showAllTeacherDetailsModalReviews, teacherDetailsModalReviews]);
+
+  const hasHiddenTeacherDetailsModalReviews =
+    teacherDetailsModalReviews.length > 5;
 
   async function loadAdminAccountsPage(skipValue) {
     const loadedAccounts = await listAccounts({
@@ -485,12 +530,14 @@ function App() {
     setCurrentPath(path);
     setProfileFocusSection(focusSection);
     setIsUserMenuOpen(false);
+    setIsNotificationsOpen(false);
   }
 
   useEffect(() => {
     function handlePopState() {
       setCurrentPath(window.location.pathname || "/");
       setIsUserMenuOpen(false);
+      setIsNotificationsOpen(false);
     }
 
     window.addEventListener("popstate", handlePopState);
@@ -500,22 +547,28 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!isUserMenuOpen) {
+    if (!isUserMenuOpen && !isNotificationsOpen) {
       return;
     }
 
     function handlePointerDown(event) {
-      if (
-        userMenuWrapRef.current &&
-        !userMenuWrapRef.current.contains(event.target)
-      ) {
+      const clickedInsideUserMenu = Boolean(
+        userMenuWrapRef.current?.contains(event.target),
+      );
+      const clickedInsideNotifications = Boolean(
+        notificationsWrapRef.current?.contains(event.target),
+      );
+
+      if (!clickedInsideUserMenu && !clickedInsideNotifications) {
         setIsUserMenuOpen(false);
+        setIsNotificationsOpen(false);
       }
     }
 
     function handleEscape(event) {
       if (event.key === "Escape") {
         setIsUserMenuOpen(false);
+        setIsNotificationsOpen(false);
       }
     }
 
@@ -526,7 +579,7 @@ function App() {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleEscape);
     };
-  }, [isUserMenuOpen]);
+  }, [isNotificationsOpen, isUserMenuOpen]);
 
   useEffect(() => {
     const hasStoredToken = Boolean(localStorage.getItem(TOKEN_STORAGE_KEY));
@@ -633,6 +686,51 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!currentAccount?.user_id) {
+      setNotifications([]);
+      setIsNotificationsOpen(false);
+      return;
+    }
+
+    let isMounted = true;
+
+    async function loadNotifications({ silent = false } = {}) {
+      if (!silent) {
+        setIsNotificationsLoading(true);
+      }
+
+      try {
+        const rows = await listMyNotifications();
+        if (isMounted) {
+          setNotifications(rows);
+        }
+      } catch (error) {
+        if (!silent && isMounted) {
+          setNotice({
+            kind: "error",
+            text: `Не вдалося завантажити сповіщення: ${error.message}`,
+          });
+        }
+      } finally {
+        if (!silent && isMounted) {
+          setIsNotificationsLoading(false);
+        }
+      }
+    }
+
+    void loadNotifications();
+
+    const intervalId = window.setInterval(() => {
+      void loadNotifications({ silent: true });
+    }, 30000);
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(intervalId);
+    };
+  }, [currentAccount?.user_id]);
+
+  useEffect(() => {
     if (role !== "student") {
       return;
     }
@@ -656,6 +754,7 @@ function App() {
           setStudentFilters((previous) => ({ ...previous, teacherId: "" }));
         }
       } catch (error) {
+        setTeachers([]);
         setNotice({
           kind: "error",
           text: `Не вдалося завантажити викладачів: ${error.message}`,
@@ -726,6 +825,9 @@ function App() {
         setHasMoreAvailableSlots(nextPageProbe.length > 0);
         setExpandedAvailableSlotDescriptions({});
       } catch (error) {
+        setAvailableSlots([]);
+        setHasMoreAvailableSlots(false);
+        setExpandedAvailableSlotDescriptions({});
         setNotice({
           kind: "error",
           text: `Не вдалося завантажити слоти: ${error.message}`,
@@ -829,15 +931,13 @@ function App() {
   }, [role, totalActiveTeacherSlotsPages, totalTeacherSlotHistoryPages]);
 
   useEffect(() => {
-    let teacherId = null;
-
-    if (role === "student") {
-      teacherId = studentFilters.teacherId
-        ? Number(studentFilters.teacherId)
-        : null;
-    } else if (role === "teacher") {
-      teacherId = currentAccount?.teacher_id ?? null;
+    if (role !== "teacher") {
+      setTeacherReviews([]);
+      setActiveTeacherReviewTargetId(null);
+      return;
     }
+
+    const teacherId = currentAccount?.teacher_id ?? null;
 
     if (!teacherId) {
       setTeacherReviews([]);
@@ -850,7 +950,7 @@ function App() {
       setActiveTeacherReviewTargetId(teacherId);
 
       try {
-        const rows = await listReviews({ teacherId, limit: 20 });
+        const rows = await listTeacherReviews(teacherId, { limit: 20 });
         setTeacherReviews(rows);
       } catch (error) {
         setNotice({
@@ -863,7 +963,7 @@ function App() {
     }
 
     void loadTeacherReviews();
-  }, [currentAccount?.teacher_id, role, studentFilters.teacherId]);
+  }, [currentAccount?.teacher_id, role]);
 
   useEffect(() => {
     if (role !== "admin") {
@@ -896,6 +996,10 @@ function App() {
       setOverviewAnalytics(null);
       setTeacherAnalyticsRows([]);
       setDisciplineAnalyticsRows([]);
+      setTeacherAnalyticsPage(1);
+      setDisciplineAnalyticsPage(1);
+      setHasMoreTeacherAnalytics(false);
+      setHasMoreDisciplineAnalytics(false);
       return;
     }
 
@@ -913,17 +1017,35 @@ function App() {
           ? toIsoFromLocalInput(adminAnalyticsFilters.endsTo)
           : undefined,
       };
+      const teacherSkip =
+        (teacherAnalyticsPage - 1) * ADMIN_ANALYTICS_PAGE_SIZE;
+      const disciplineSkip =
+        (disciplineAnalyticsPage - 1) * ADMIN_ANALYTICS_PAGE_SIZE;
 
       try {
         const [overview, teacherRows, disciplineRows] = await Promise.all([
           getOverviewAnalytics(analyticsQuery),
-          listTeacherAnalytics(analyticsQuery),
-          listDisciplineAnalytics(analyticsQuery),
+          listTeacherAnalytics({
+            ...analyticsQuery,
+            skip: teacherSkip,
+            limit: ADMIN_ANALYTICS_PAGE_SIZE,
+          }),
+          listDisciplineAnalytics({
+            ...analyticsQuery,
+            skip: disciplineSkip,
+            limit: ADMIN_ANALYTICS_PAGE_SIZE,
+          }),
         ]);
 
         setOverviewAnalytics(overview);
         setTeacherAnalyticsRows(teacherRows);
         setDisciplineAnalyticsRows(disciplineRows);
+        setHasMoreTeacherAnalytics(
+          teacherRows.length === ADMIN_ANALYTICS_PAGE_SIZE,
+        );
+        setHasMoreDisciplineAnalytics(
+          disciplineRows.length === ADMIN_ANALYTICS_PAGE_SIZE,
+        );
       } catch (error) {
         setNotice({
           kind: "error",
@@ -941,7 +1063,9 @@ function App() {
     adminAnalyticsFilters.endsTo,
     adminAnalyticsFilters.startsFrom,
     adminAnalyticsFilters.teacherId,
+    disciplineAnalyticsPage,
     role,
+    teacherAnalyticsPage,
   ]);
 
   function setSessionFromTokenPayload(payload) {
@@ -966,14 +1090,100 @@ function App() {
     setCurrentAccount(account);
   }
 
+  async function refreshNotifications({ silent = false } = {}) {
+    if (!currentAccount?.user_id) {
+      setNotifications([]);
+      return;
+    }
+
+    if (!silent) {
+      setIsNotificationsLoading(true);
+    }
+
+    try {
+      const rows = await listMyNotifications();
+      setNotifications(rows);
+    } catch (error) {
+      if (!silent) {
+        setNotice({
+          kind: "error",
+          text: `Не вдалося завантажити сповіщення: ${error.message}`,
+        });
+      }
+    } finally {
+      if (!silent) {
+        setIsNotificationsLoading(false);
+      }
+    }
+  }
+
+  async function handleToggleNotifications() {
+    const nextOpenState = !isNotificationsOpen;
+    setIsNotificationsOpen(nextOpenState);
+    setIsUserMenuOpen(false);
+
+    if (nextOpenState) {
+      await refreshNotifications();
+    }
+  }
+
+  async function handleNotificationClick(notification) {
+    if (notification.is_read) {
+      return;
+    }
+
+    setNotificationActionId(notification.id);
+
+    try {
+      const updated = await markNotificationAsRead(notification.id);
+      setNotifications((previous) =>
+        previous.map((item) => (item.id === updated.id ? updated : item)),
+      );
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        text: `Не вдалося оновити сповіщення: ${error.message}`,
+      });
+    } finally {
+      setNotificationActionId(null);
+    }
+  }
+
+  async function handleClearNotificationsHistory() {
+    if (!currentAccount?.user_id || notifications.length === 0) {
+      return;
+    }
+
+    setIsNotificationsClearing(true);
+
+    try {
+      await clearMyNotifications();
+      setNotifications([]);
+      setNotice({ kind: "success", text: "Історію сповіщень очищено." });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        text: `Не вдалося очистити історію сповіщень: ${error.message}`,
+      });
+    } finally {
+      setIsNotificationsClearing(false);
+    }
+  }
+
   function handleLogout() {
     clearAccessToken();
     localStorage.removeItem(TOKEN_STORAGE_KEY);
     setCurrentAccount(null);
     setIsUserMenuOpen(false);
+    setIsNotificationsOpen(false);
+    setNotifications([]);
+    setIsNotificationsClearing(false);
     setProfileUpdateDraft(EMPTY_PROFILE_UPDATE_DRAFT);
     setReviewEditorBookingId(null);
     setReviewDraftByBookingId({});
+    setTeacherDetailsModalContext(null);
+    setTeacherDetailsModalReviews([]);
+    setShowAllTeacherDetailsModalReviews(false);
     if (typeof window !== "undefined") {
       window.history.replaceState({}, "", "/");
     }
@@ -994,6 +1204,10 @@ function App() {
     setOverviewAnalytics(null);
     setTeacherAnalyticsRows([]);
     setDisciplineAnalyticsRows([]);
+    setTeacherAnalyticsPage(1);
+    setDisciplineAnalyticsPage(1);
+    setHasMoreTeacherAnalytics(false);
+    setHasMoreDisciplineAnalytics(false);
     setNotice({ kind: "info", text: "Сесію завершено." });
   }
 
@@ -1063,6 +1277,57 @@ function App() {
     });
   }
 
+  async function openTeacherDetailsModal({
+    teacherId,
+    teacherName,
+    cityName,
+    disciplineName = null,
+    startsAt = null,
+    endsAt = null,
+    description = null,
+    averageRating = null,
+    reviewsCount = 0,
+    source = "teacher",
+  }) {
+    if (!teacherId) {
+      return;
+    }
+
+    setTeacherDetailsModalContext({
+      teacherId,
+      teacherName,
+      cityName,
+      disciplineName,
+      startsAt,
+      endsAt,
+      description,
+      averageRating,
+      reviewsCount,
+      source,
+    });
+    setTeacherDetailsModalReviews([]);
+    setShowAllTeacherDetailsModalReviews(false);
+    setIsTeacherDetailsModalReviewsLoading(true);
+
+    try {
+      const rows = await listTeacherReviews(teacherId, { limit: 200 });
+      setTeacherDetailsModalReviews(rows);
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        text: `Не вдалося завантажити відгуки викладача: ${error.message}`,
+      });
+    } finally {
+      setIsTeacherDetailsModalReviewsLoading(false);
+    }
+  }
+
+  function closeTeacherDetailsModal() {
+    setTeacherDetailsModalContext(null);
+    setTeacherDetailsModalReviews([]);
+    setShowAllTeacherDetailsModalReviews(false);
+  }
+
   function handlePreviousStudentSlotsPage() {
     setStudentSlotsPage((previous) => Math.max(previous - 1, 1));
   }
@@ -1120,6 +1385,30 @@ function App() {
     setTeacherSlotHistoryPage((previous) => previous + 1);
   }
 
+  function handlePreviousTeacherAnalyticsPage() {
+    setTeacherAnalyticsPage((previous) => Math.max(previous - 1, 1));
+  }
+
+  function handleNextTeacherAnalyticsPage() {
+    if (!hasMoreTeacherAnalytics) {
+      return;
+    }
+
+    setTeacherAnalyticsPage((previous) => previous + 1);
+  }
+
+  function handlePreviousDisciplineAnalyticsPage() {
+    setDisciplineAnalyticsPage((previous) => Math.max(previous - 1, 1));
+  }
+
+  function handleNextDisciplineAnalyticsPage() {
+    if (!hasMoreDisciplineAnalytics) {
+      return;
+    }
+
+    setDisciplineAnalyticsPage((previous) => previous + 1);
+  }
+
   function toggleAvailableSlotDescription(slotId) {
     setExpandedAvailableSlotDescriptions((previous) => ({
       ...previous,
@@ -1174,6 +1463,8 @@ function App() {
 
   function handleAdminAnalyticsFilterChange(event) {
     const { name, value } = event.target;
+    setTeacherAnalyticsPage(1);
+    setDisciplineAnalyticsPage(1);
     setAdminAnalyticsFilters((previous) => {
       if (name === "cityId" && previous.teacherId) {
         return {
@@ -1441,11 +1732,21 @@ function App() {
       setTeachers(loadedTeachers);
 
       if (activeTeacherReviewTargetId) {
-        const loadedReviews = await listReviews({
-          teacherId: activeTeacherReviewTargetId,
-          limit: 20,
-        });
+        const loadedReviews = await listTeacherReviews(
+          activeTeacherReviewTargetId,
+          { limit: 20 },
+        );
         setTeacherReviews(loadedReviews);
+      }
+
+      if (teacherDetailsModalContext?.teacherId === booking.teacher_id) {
+        const loadedModalReviews = await listTeacherReviews(
+          booking.teacher_id,
+          {
+            limit: 200,
+          },
+        );
+        setTeacherDetailsModalReviews(loadedModalReviews);
       }
 
       setReviewDraftByBookingId((previous) => {
@@ -1732,6 +2033,36 @@ function App() {
     }
   }
 
+  async function handleCompleteTeacherSlot(slotId) {
+    setSlotActionInProgressId(slotId);
+
+    try {
+      await completeTeacherSlot(slotId);
+      const loadedSlots = await listTeacherSlots();
+      setTeacherSlots(loadedSlots);
+
+      if (expandedTeacherSlotId === slotId) {
+        const slotBookings = await listTeacherSlotBookings(slotId);
+        setTeacherSlotBookingsBySlotId((previous) => ({
+          ...previous,
+          [slotId]: slotBookings,
+        }));
+      }
+
+      setNotice({
+        kind: "success",
+        text: "Пару завершено, слот переміщено в історію.",
+      });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        text: `Не вдалося завершити пару: ${error.message}`,
+      });
+    } finally {
+      setSlotActionInProgressId(null);
+    }
+  }
+
   async function handleToggleTeacherSlotActive(slot) {
     setSlotActionInProgressId(slot.slot_id);
 
@@ -1980,7 +2311,6 @@ function App() {
     }
   }
 
-  const authTokenPresent = Boolean(getAccessToken());
   const adminOverview = overviewAnalytics ?? {
     total_cities: 0,
     total_disciplines: 0,
@@ -2034,39 +2364,122 @@ function App() {
             <p className="meta-line role-line">Роль: {currentAccount.role}</p>
           </div>
 
-          <div className="top-nav-menu-wrap" ref={userMenuWrapRef}>
-            <button
-              type="button"
-              className="avatar-button"
-              aria-haspopup="menu"
-              aria-expanded={isUserMenuOpen}
-              aria-controls="user-menu-dropdown"
-              onClick={() => setIsUserMenuOpen((previous) => !previous)}
-            >
-              {userInitials}
-            </button>
+          <div className="top-nav-actions">
+            <div className="notifications-wrap" ref={notificationsWrapRef}>
+              <button
+                type="button"
+                className="icon-button bell-button"
+                aria-haspopup="menu"
+                aria-expanded={isNotificationsOpen}
+                aria-controls="notifications-dropdown"
+                onClick={handleToggleNotifications}
+              >
+                <span aria-hidden="true">🔔</span>
+                {hasUnreadNotifications ? (
+                  <span className="notification-badge" aria-hidden="true" />
+                ) : null}
+              </button>
 
-            {isUserMenuOpen ? (
-              <div className="user-menu-dropdown" id="user-menu-dropdown">
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => navigateTo("/profile", "profile")}
+              {isNotificationsOpen ? (
+                <div
+                  className="notifications-dropdown"
+                  id="notifications-dropdown"
                 >
-                  Мій профіль
-                </button>
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => navigateTo("/profile", "settings")}
-                >
-                  Налаштування
-                </button>
-                <button type="button" className="danger" onClick={handleLogout}>
-                  Вийти
-                </button>
-              </div>
-            ) : null}
+                  <div className="notifications-header-row">
+                    <p className="notifications-title">Сповіщення</p>
+                    <button
+                      type="button"
+                      className="ghost notification-clear-button"
+                      onClick={handleClearNotificationsHistory}
+                      disabled={
+                        isNotificationsLoading ||
+                        isNotificationsClearing ||
+                        notifications.length === 0
+                      }
+                    >
+                      {isNotificationsClearing
+                        ? "Очищення..."
+                        : "Очистити історію"}
+                    </button>
+                  </div>
+
+                  {isNotificationsLoading ? (
+                    <p className="meta-line">Завантаження...</p>
+                  ) : notifications.length === 0 ? (
+                    <p className="meta-line">Поки що сповіщень немає.</p>
+                  ) : (
+                    <ul className="notifications-list">
+                      {notifications.map((notification) => (
+                        <li key={notification.id}>
+                          <button
+                            type="button"
+                            className={`notification-item ${
+                              notification.is_read ? "" : "is-unread"
+                            }`}
+                            onClick={() =>
+                              handleNotificationClick(notification)
+                            }
+                            disabled={notificationActionId === notification.id}
+                          >
+                            <span className="notification-item-title">
+                              {notification.title}
+                            </span>
+                            <span className="notification-item-message">
+                              {notification.message}
+                            </span>
+                            <span className="notification-item-time">
+                              {formatDateTime(notification.created_at)}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="top-nav-menu-wrap" ref={userMenuWrapRef}>
+              <button
+                type="button"
+                className="avatar-button"
+                aria-haspopup="menu"
+                aria-expanded={isUserMenuOpen}
+                aria-controls="user-menu-dropdown"
+                onClick={() => {
+                  setIsNotificationsOpen(false);
+                  setIsUserMenuOpen((previous) => !previous);
+                }}
+              >
+                {userInitials}
+              </button>
+
+              {isUserMenuOpen ? (
+                <div className="user-menu-dropdown" id="user-menu-dropdown">
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => navigateTo("/profile", "profile")}
+                  >
+                    Мій профіль
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => navigateTo("/profile", "settings")}
+                  >
+                    Налаштування
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={handleLogout}
+                  >
+                    Вийти
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </section>
       ) : null}
@@ -2105,10 +2518,7 @@ function App() {
               </button>
             </form>
 
-            <p className="hint-text">
-              Demo: admin/admin12345, teacher_ivan/teacher123,
-              student_andriy/student123
-            </p>
+            <p className="hint-text">Demo: admin/admin12345</p>
           </article>
 
           <article className="panel reveal" style={{ animationDelay: "260ms" }}>
@@ -2398,7 +2808,7 @@ function App() {
             >
               <h2>Фільтри слотів</h2>
 
-              <div className="filters-grid">
+              <div className="filters-grid slot-filters">
                 <label>
                   Місто
                   <select
@@ -2441,10 +2851,11 @@ function App() {
                     <option value="">Усі викладачі</option>
                     {teachers.map((teacher) => (
                       <option key={teacher.id} value={teacher.id}>
-                        {teacher.full_name}
-                        {teacher.average_rating != null
-                          ? ` · ⭐ ${teacher.average_rating}`
-                          : ""}
+                        {teacher.full_name} ·{" "}
+                        {formatTeacherRatingSummary(
+                          teacher.average_rating,
+                          teacher.reviews_count,
+                        )}
                       </option>
                     ))}
                   </select>
@@ -2466,39 +2877,154 @@ function App() {
               className="panel reveal"
               style={{ animationDelay: "260ms" }}
             >
-              <h2>Відгуки про викладача</h2>
+              <h2>Викладачі у фільтрі</h2>
 
-              {studentFilters.teacherId ? (
-                <>
+              {teachers.length === 0 ? (
+                <p className="empty-state">
+                  За поточними фільтрами викладачів не знайдено.
+                </p>
+              ) : (
+                <div className="analytics-list teacher-preview-list">
+                  {teachers.slice(0, 8).map((teacher) => (
+                    <article
+                      key={teacher.id}
+                      className="analytics-item teacher-preview-item"
+                    >
+                      <p>
+                        <strong>{teacher.full_name}</strong>
+                      </p>
+                      <p className="meta-line">
+                        {cityNameById.get(teacher.city_id) ||
+                          "Місто не вказано"}
+                      </p>
+                      <p className="meta-line teacher-rating-line">
+                        {formatTeacherRatingSummary(
+                          teacher.average_rating,
+                          teacher.reviews_count,
+                        )}
+                      </p>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() =>
+                          void openTeacherDetailsModal({
+                            teacherId: teacher.id,
+                            teacherName: teacher.full_name,
+                            cityName: cityNameById.get(teacher.city_id) || null,
+                            averageRating: teacher.average_rating,
+                            reviewsCount: teacher.reviews_count,
+                            source: "teacher",
+                          })
+                        }
+                      >
+                        Профіль і відгуки
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              )}
+
+              <div className="inline-actions analytics-pagination">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={handlePreviousTeacherAnalyticsPage}
+                  disabled={
+                    isAdminAnalyticsLoading || teacherAnalyticsPage === 1
+                  }
+                >
+                  Назад
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={handleNextTeacherAnalyticsPage}
+                  disabled={isAdminAnalyticsLoading || !hasMoreTeacherAnalytics}
+                >
+                  Далі
+                </button>
+              </div>
+            </article>
+          </section>
+
+          {teacherDetailsModalContext ? (
+            <div className="modal-overlay" role="dialog" aria-modal="true">
+              <div className="modal-card">
+                <div className="panel-header-row">
+                  <h2>
+                    {teacherDetailsModalContext.source === "slot"
+                      ? "Деталі слота"
+                      : "Профіль викладача"}
+                  </h2>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={closeTeacherDetailsModal}
+                  >
+                    Закрити
+                  </button>
+                </div>
+
+                <div className="modal-summary-grid">
                   <p className="meta-line">
                     Викладач:{" "}
-                    {selectedTeacherForReviews?.full_name ?? "Обраний"}
+                    <strong>{teacherDetailsModalContext.teacherName}</strong>
                   </p>
                   <p className="meta-line">
-                    Token активний: {authTokenPresent ? "так" : "ні"}
+                    Рейтинг:{" "}
+                    {formatTeacherRatingSummary(
+                      teacherDetailsModalContext.averageRating,
+                      teacherDetailsModalContext.reviewsCount,
+                    )}
+                  </p>
+                  <p className="meta-line">
+                    Місто: {teacherDetailsModalContext.cityName || "Не вказано"}
                   </p>
 
-                  {isTeacherReviewsLoading ? (
-                    <p className="meta-line">Завантажую відгуки...</p>
-                  ) : teacherReviews.length === 0 ? (
-                    <p className="empty-state">
-                      Для цього викладача поки немає відгуків.
-                    </p>
-                  ) : (
-                    <div className="analytics-list">
-                      {teacherReviews.slice(0, 8).map((review) => (
+                  {teacherDetailsModalContext.source === "slot" ? (
+                    <>
+                      <p className="meta-line">
+                        Дисципліна:{" "}
+                        {teacherDetailsModalContext.disciplineName ||
+                          "Не вказано"}
+                      </p>
+                      <p className="meta-line">
+                        Час:{" "}
+                        {formatDateTimeRange(
+                          teacherDetailsModalContext.startsAt,
+                          teacherDetailsModalContext.endsAt,
+                        )}
+                      </p>
+                      <p className="meta-line">
+                        Опис:{" "}
+                        {teacherDetailsModalContext.description || "Не вказано"}
+                      </p>
+                    </>
+                  ) : null}
+                </div>
+
+                <h3>Відгуки студентів</h3>
+
+                {isTeacherDetailsModalReviewsLoading ? (
+                  <p className="meta-line">Завантажую відгуки...</p>
+                ) : teacherDetailsModalReviews.length === 0 ? (
+                  <p className="empty-state">
+                    Для цього викладача поки немає відгуків.
+                  </p>
+                ) : (
+                  <>
+                    <div className="analytics-list modal-reviews-list">
+                      {displayedTeacherDetailsModalReviews.map((review) => (
                         <article
                           key={review.review_id}
                           className="analytics-item review-item"
                         >
                           <p>
-                            <strong>
-                              {"⭐".repeat(review.rating)} ({review.rating}/5)
-                            </strong>{" "}
-                            · {review.discipline_name}
+                            <strong>{review.student_name}</strong> ·{" "}
+                            {getReviewStars(review.rating)} ({review.rating}/5)
                           </p>
                           <p className="meta-line">
-                            Від: {review.student_name}
+                            {formatDateTime(review.created_at)}
                           </p>
                           <p className="meta-line">
                             {review.comment || "Без текстового коментаря."}
@@ -2506,15 +3032,29 @@ function App() {
                         </article>
                       ))}
                     </div>
-                  )}
-                </>
-              ) : (
-                <p className="hint-text">
-                  Оберіть викладача у фільтрі, щоб побачити його відгуки.
-                </p>
-              )}
-            </article>
-          </section>
+
+                    {hasHiddenTeacherDetailsModalReviews ? (
+                      <div className="inline-actions">
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() =>
+                            setShowAllTeacherDetailsModalReviews(
+                              (previous) => !previous,
+                            )
+                          }
+                        >
+                          {showAllTeacherDetailsModalReviews
+                            ? "Показати останні 5"
+                            : `Показати всі (${teacherDetailsModalReviews.length})`}
+                        </button>
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            </div>
+          ) : null}
 
           <section className="panel reveal" style={{ animationDelay: "320ms" }}>
             <div className="panel-header-row">
@@ -2554,12 +3094,15 @@ function App() {
                         style={{ animationDelay: `${index * 70 + 180}ms` }}
                       >
                         <p className="slot-topic">{slot.discipline_name}</p>
-                        <h3>{slot.teacher_name}</h3>
-                        {teacherRatingById.has(slot.teacher_id) ? (
-                          <p className="slot-meta">
-                            ⭐ Рейтинг: {teacherRatingById.get(slot.teacher_id)}
-                          </p>
-                        ) : null}
+                        <div className="slot-title-row">
+                          <h3>{slot.teacher_name}</h3>
+                          <span className="slot-rating-chip">
+                            {formatTeacherRatingSummary(
+                              slot.average_rating,
+                              slot.reviews_count,
+                            )}
+                          </span>
+                        </div>
                         <p className="slot-meta">{slot.city_name}</p>
                         <p className="slot-time">
                           {formatDateTimeRange(slot.starts_at, slot.ends_at)}
@@ -2591,23 +3134,46 @@ function App() {
                           <p className="slot-meta">Опис не вказано.</p>
                         )}
 
-                        <button
-                          type="button"
-                          onClick={() => void handleBookSlot(slot.slot_id)}
-                          disabled={
-                            bookingInProgressSlotId === slot.slot_id ||
-                            slot.available_seats <= 0 ||
-                            hasActiveBooking
-                          }
-                        >
-                          {bookingInProgressSlotId === slot.slot_id
-                            ? "Бронюю..."
-                            : hasActiveBooking
-                              ? "Вже записані"
-                              : slot.available_seats <= 0
-                                ? "Немає місць"
-                                : "Записатися"}
-                        </button>
+                        <div className="inline-actions">
+                          <button
+                            type="button"
+                            className="ghost"
+                            onClick={() =>
+                              void openTeacherDetailsModal({
+                                teacherId: slot.teacher_id,
+                                teacherName: slot.teacher_name,
+                                cityName: slot.city_name,
+                                disciplineName: slot.discipline_name,
+                                startsAt: slot.starts_at,
+                                endsAt: slot.ends_at,
+                                description: slot.description,
+                                averageRating: slot.average_rating,
+                                reviewsCount: slot.reviews_count,
+                                source: "slot",
+                              })
+                            }
+                          >
+                            Деталі
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleBookSlot(slot.slot_id)}
+                            disabled={
+                              bookingInProgressSlotId === slot.slot_id ||
+                              slot.available_seats <= 0 ||
+                              hasActiveBooking
+                            }
+                          >
+                            {bookingInProgressSlotId === slot.slot_id
+                              ? "Бронюю..."
+                              : hasActiveBooking
+                                ? "Вже записані"
+                                : slot.available_seats <= 0
+                                  ? "Немає місць"
+                                  : "Записатися"}
+                          </button>
+                        </div>
                       </article>
                     );
                   })}
@@ -3043,15 +3609,14 @@ function App() {
                               </button>
                               <button
                                 type="button"
-                                className="ghost"
                                 onClick={() =>
-                                  void handleToggleTeacherSlotActive(slot)
+                                  void handleCompleteTeacherSlot(slot.slot_id)
                                 }
                                 disabled={
                                   slotActionInProgressId === slot.slot_id
                                 }
                               >
-                                Деактивувати
+                                Завершити пару
                               </button>
                               <button
                                 type="button"
@@ -3113,10 +3678,16 @@ function App() {
                       <div className="teacher-slot-grid">
                         {paginatedTeacherSlotHistory.map((slot, index) => {
                           const endsAtMs = Date.parse(slot.ends_at);
+                          const hasEnded =
+                            !Number.isFinite(endsAtMs) ||
+                            endsAtMs <= Date.now();
                           const canActivate =
                             !slot.is_active &&
                             Number.isFinite(endsAtMs) &&
                             endsAtMs > Date.now();
+                          const historyStatusLabel = hasEnded
+                            ? "Завершений"
+                            : "Неактивний";
 
                           return (
                             <article
@@ -3140,8 +3711,7 @@ function App() {
                                 Заброньовано: {slot.reserved_seats}
                               </p>
                               <p className="slot-meta">
-                                Статус:{" "}
-                                {slot.is_active ? "Завершений" : "Неактивний"}
+                                Статус: {historyStatusLabel}
                               </p>
 
                               <div className="inline-actions">
@@ -3804,16 +4374,23 @@ function App() {
               style={{ animationDelay: "340ms" }}
             >
               <h2>Топ викладачів</h2>
+              <p className="meta-line">Сторінка {teacherAnalyticsPage}</p>
               {teacherAnalyticsRows.length === 0 && !isAdminAnalyticsLoading ? (
                 <p className="empty-state">
                   Немає даних за поточними фільтрами.
                 </p>
               ) : (
                 <div className="analytics-list">
-                  {teacherAnalyticsRows.slice(0, 8).map((row) => (
+                  {teacherAnalyticsRows.map((row) => (
                     <article key={row.teacher_id} className="analytics-item">
                       <p>
                         <strong>{row.teacher_name}</strong> · {row.city_name}
+                      </p>
+                      <p className="meta-line">
+                        ⭐{" "}
+                        {row.average_rating != null
+                          ? Number(row.average_rating).toFixed(1)
+                          : "-"}
                       </p>
                       <p className="meta-line">
                         Слоти: {row.slots_total} · Бронювання:{" "}
@@ -3826,6 +4403,27 @@ function App() {
                   ))}
                 </div>
               )}
+
+              <div className="inline-actions analytics-pagination">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={handlePreviousTeacherAnalyticsPage}
+                  disabled={
+                    isAdminAnalyticsLoading || teacherAnalyticsPage === 1
+                  }
+                >
+                  Назад
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={handleNextTeacherAnalyticsPage}
+                  disabled={isAdminAnalyticsLoading || !hasMoreTeacherAnalytics}
+                >
+                  Далі
+                </button>
+              </div>
             </article>
 
             <article
@@ -3833,6 +4431,7 @@ function App() {
               style={{ animationDelay: "400ms" }}
             >
               <h2>Попит за дисциплінами</h2>
+              <p className="meta-line">Сторінка {disciplineAnalyticsPage}</p>
               {disciplineAnalyticsRows.length === 0 &&
               !isAdminAnalyticsLoading ? (
                 <p className="empty-state">
@@ -3840,7 +4439,7 @@ function App() {
                 </p>
               ) : (
                 <div className="analytics-list">
-                  {disciplineAnalyticsRows.slice(0, 8).map((row) => (
+                  {disciplineAnalyticsRows.map((row) => (
                     <article key={row.discipline_id} className="analytics-item">
                       <p>
                         <strong>{row.discipline_name}</strong>
@@ -3856,6 +4455,29 @@ function App() {
                   ))}
                 </div>
               )}
+
+              <div className="inline-actions analytics-pagination">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={handlePreviousDisciplineAnalyticsPage}
+                  disabled={
+                    isAdminAnalyticsLoading || disciplineAnalyticsPage === 1
+                  }
+                >
+                  Назад
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={handleNextDisciplineAnalyticsPage}
+                  disabled={
+                    isAdminAnalyticsLoading || !hasMoreDisciplineAnalytics
+                  }
+                >
+                  Далі
+                </button>
+              </div>
             </article>
           </section>
         </>
