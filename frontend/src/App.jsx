@@ -58,9 +58,6 @@ const COMMON_EMAIL_DOMAIN_TYPOS = new Set([
 const CANONICAL_EMAIL_PROVIDER_DOMAINS = {
   gmail: "gmail.com",
   outlook: "outlook.com",
-  hotmail: "hotmail.com",
-  icloud: "icloud.com",
-  yahoo: "yahoo.com",
 };
 
 function getTotalPages(itemsCount, pageSize) {
