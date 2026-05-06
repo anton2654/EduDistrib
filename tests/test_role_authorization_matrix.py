@@ -64,8 +64,8 @@ async def _ensure_admin_token(client: AsyncClient) -> str | None:
 
 async def _ensure_teacher_headers(
     client: AsyncClient,
-    username: str = "teacher_ivan",
-    password: str = "teacher123",
+    username: str = "teacher_3",
+    password: str = "teacher_3",
 ) -> dict[str, str] | None:
     login_response = await client.post(
         "/api/v1/auth/login",
@@ -118,7 +118,7 @@ async def test_teacher_cannot_access_student_booking_list_route() -> None:
     ) as client:
         teacher_login_response = await client.post(
             "/api/v1/auth/login",
-            json={"username": "teacher_ivan", "password": "teacher123"},
+            json={"username": "teacher_3", "password": "teacher_3"},
         )
         if teacher_login_response.status_code != 200:
             pytest.skip("Seeded teacher account is required for this test.")
@@ -838,13 +838,20 @@ async def test_teacher_slot_update_allows_time_change_and_notifies_students() ->
 
         starts_at = datetime.fromisoformat(target_slot["starts_at"].replace("Z", "+00:00"))
         ends_at = datetime.fromisoformat(target_slot["ends_at"].replace("Z", "+00:00"))
+        latest_slot_end = max(
+            datetime.fromisoformat(slot["ends_at"].replace("Z", "+00:00"))
+            for slot in slots
+            if slot["is_active"]
+        )
+        new_starts_at = latest_slot_end + timedelta(days=1)
+        new_ends_at = new_starts_at + (ends_at - starts_at)
 
         move_time_response = await client.put(
             f"/api/v1/teacher/slots/{target_slot['slot_id']}",
             headers=teacher_headers,
             json={
-                "starts_at": (starts_at + timedelta(hours=1)).isoformat(),
-                "ends_at": (ends_at + timedelta(hours=1)).isoformat(),
+                "starts_at": new_starts_at.isoformat(),
+                "ends_at": new_ends_at.isoformat(),
             },
         )
 
@@ -861,6 +868,40 @@ async def test_teacher_slot_update_allows_time_change_and_notifies_students() ->
         notification["title"] == "Зміна деталей заняття"
         for notification in student_notifications
     )
+
+
+@pytest.mark.asyncio
+async def test_teacher_cannot_create_overlapping_slot() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        teacher_headers = await _ensure_teacher_headers(client)
+        if teacher_headers is None:
+            pytest.skip("Seeded teacher account is required for this test.")
+
+        slots_response = await client.get("/api/v1/teacher/slots/", headers=teacher_headers)
+        assert slots_response.status_code == 200
+        target_slot = next(
+            (slot for slot in slots_response.json() if slot["is_active"]),
+            None,
+        )
+        if target_slot is None:
+            pytest.skip("Need an active teacher slot for overlap test.")
+
+        overlap_response = await client.post(
+            "/api/v1/teacher/slots/",
+            headers=teacher_headers,
+            json={
+                "discipline_id": target_slot["discipline_id"],
+                "starts_at": target_slot["starts_at"],
+                "ends_at": target_slot["ends_at"],
+                "capacity": 1,
+                "is_active": True,
+            },
+        )
+
+    assert overlap_response.status_code == 409
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -272,14 +272,20 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 TeacherSlot.teacher_id,
                 TeacherSlot.discipline_id,
                 Discipline.name.label("discipline_name"),
+                City.id.label("city_id"),
+                City.name.label("city_name"),
                 TeacherSlot.starts_at,
                 TeacherSlot.ends_at,
                 TeacherSlot.description,
+                TeacherSlot.address,
                 TeacherSlot.capacity,
                 reserved_seats.label("reserved_seats"),
                 TeacherSlot.is_active,
+                TeacherSlot.completed_at,
                 TeacherSlot.created_at,
             )
+            .join(Teacher, Teacher.id == TeacherSlot.teacher_id)
+            .join(City, City.id == Teacher.city_id)
             .join(Discipline, Discipline.id == TeacherSlot.discipline_id)
             .outerjoin(Booking, Booking.slot_id == TeacherSlot.id)
             .where(TeacherSlot.teacher_id == teacher_id)
@@ -288,11 +294,15 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 TeacherSlot.teacher_id,
                 TeacherSlot.discipline_id,
                 Discipline.name,
+                City.id,
+                City.name,
                 TeacherSlot.starts_at,
                 TeacherSlot.ends_at,
                 TeacherSlot.description,
+                TeacherSlot.address,
                 TeacherSlot.capacity,
                 TeacherSlot.is_active,
+                TeacherSlot.completed_at,
                 TeacherSlot.created_at,
             )
             .order_by(TeacherSlot.starts_at, TeacherSlot.id)
@@ -305,12 +315,16 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 teacher_id=row["teacher_id"],
                 discipline_id=row["discipline_id"],
                 discipline_name=row["discipline_name"],
+                city_id=row["city_id"],
+                city_name=row["city_name"],
                 starts_at=row["starts_at"],
                 ends_at=row["ends_at"],
                 description=row["description"],
+                address=row["address"],
                 capacity=row["capacity"],
                 reserved_seats=int(row["reserved_seats"] or 0),
                 is_active=row["is_active"],
+                completed_at=row["completed_at"],
                 created_at=row["created_at"],
             )
             for row in rows
@@ -320,6 +334,16 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
         for field, value in slot_in.model_dump(exclude_unset=True).items():
             setattr(slot, field, value)
 
+        if slot_in.is_active is True:
+            slot.completed_at = None
+
+        await self._session.commit()
+        await self._session.refresh(slot)
+        return slot
+
+    async def mark_slot_completed(self, slot: TeacherSlot) -> TeacherSlot:
+        slot.is_active = False
+        slot.completed_at = datetime.now(timezone.utc)
         await self._session.commit()
         await self._session.refresh(slot)
         return slot
@@ -359,6 +383,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 TeacherSlot.starts_at,
                 TeacherSlot.ends_at,
                 TeacherSlot.description,
+                TeacherSlot.address,
                 TeacherSlot.capacity,
                 reserved_seats.label("reserved_seats"),
             )
@@ -366,7 +391,10 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
             .join(City, City.id == Teacher.city_id)
             .join(Discipline, Discipline.id == TeacherSlot.discipline_id)
             .outerjoin(Booking, Booking.slot_id == TeacherSlot.id)
-            .where(TeacherSlot.is_active.is_(True))
+            .where(
+                TeacherSlot.is_active.is_(True),
+                TeacherSlot.ends_at > func.now(),
+            )
             .group_by(
                 TeacherSlot.id,
                 Teacher.id,
@@ -378,6 +406,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 TeacherSlot.starts_at,
                 TeacherSlot.ends_at,
                 TeacherSlot.description,
+                TeacherSlot.address,
                 TeacherSlot.capacity,
             )
             .having(reserved_seats < TeacherSlot.capacity)
@@ -409,6 +438,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 starts_at=row["starts_at"],
                 ends_at=row["ends_at"],
                 description=row["description"],
+                address=row["address"],
                 capacity=row["capacity"],
                 reserved_seats=int(row["reserved_seats"] or 0),
             )
@@ -725,6 +755,30 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none() is not None
 
+    async def teacher_has_slot_time_conflict(
+        self,
+        teacher_id: int,
+        starts_at: datetime,
+        ends_at: datetime,
+        exclude_slot_id: int | None = None,
+    ) -> bool:
+        stmt = (
+            select(TeacherSlot.id)
+            .where(
+                TeacherSlot.teacher_id == teacher_id,
+                TeacherSlot.is_active.is_(True),
+                TeacherSlot.starts_at < ends_at,
+                TeacherSlot.ends_at > starts_at,
+            )
+            .limit(1)
+        )
+
+        if exclude_slot_id is not None:
+            stmt = stmt.where(TeacherSlot.id != exclude_slot_id)
+
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
     async def create_booking(self, student_id: int, slot_id: int) -> Booking:
         booking = Booking(
             student_id=student_id,
@@ -759,6 +813,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 TeacherSlot.starts_at,
                 TeacherSlot.ends_at,
                 TeacherSlot.description,
+                TeacherSlot.address,
                 Booking.status,
                 case((Review.id.is_not(None), True), else_=False).label("has_review"),
                 Booking.created_at,
@@ -801,6 +856,7 @@ class EnrollmentRepository(EnrollmentRepositoryInterface):
                 starts_at=row["starts_at"],
                 ends_at=row["ends_at"],
                 description=row["description"],
+                address=row["address"],
                 status=row["status"],
                 has_review=bool(row["has_review"]),
                 created_at=row["created_at"],

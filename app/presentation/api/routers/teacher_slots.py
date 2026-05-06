@@ -24,6 +24,7 @@ from app.application.services.enrollment_service import (
     SlotTimeRangeError,
     TeacherNotFoundError,
     TeacherSlotAccessError,
+    TeacherSlotTimeConflictError,
 )
 from app.domain.entities.booking import BookingStatus
 from app.domain.entities.user_account import UserAccount, UserRole
@@ -43,13 +44,17 @@ def _to_teacher_slot_details(slot: TeacherSlotProjection) -> TeacherSlotDetailsR
         teacher_id=slot.teacher_id,
         discipline_id=slot.discipline_id,
         discipline_name=slot.discipline_name,
+        city_id=slot.city_id,
+        city_name=slot.city_name,
         starts_at=slot.starts_at,
         ends_at=slot.ends_at,
         description=slot.description,
+        address=slot.address,
         capacity=slot.capacity,
         reserved_seats=slot.reserved_seats,
         available_seats=available_seats,
         is_active=slot.is_active,
+        completed_at=slot.completed_at,
         created_at=slot.created_at,
     )
 
@@ -71,6 +76,7 @@ def _to_teacher_slot_booking(slot_booking: TeacherSlotBookingProjection) -> Teac
         student_name=slot_booking.student_name,
         student_email=slot_booking.student_email,
         status=slot_booking.status,
+        display_status=None,
         created_at=slot_booking.created_at,
     )
 
@@ -102,6 +108,8 @@ async def create_my_slot(
         slot = await service.create_slot_for_teacher(teacher_id, slot_in)
     except (TeacherNotFoundError, DisciplineNotFoundError) as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except TeacherSlotTimeConflictError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     return TeacherSlotReadDTO.model_validate(slot)
 
@@ -123,6 +131,7 @@ async def update_my_slot(
         SlotTimeRangeError,
         SlotCapacityBelowReservedError,
         SlotUpdateLockedByActiveBookingsError,
+        TeacherSlotTimeConflictError,
     ) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except TeacherSlotAccessError as error:

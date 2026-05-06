@@ -137,9 +137,9 @@ async def _ensure_slot(
                 TeacherSlot.discipline_id == discipline_id,
                 TeacherSlot.starts_at == starts_at,
                 TeacherSlot.ends_at == ends_at,
-            ),
+            ).order_by(TeacherSlot.id),
         )
-    ).scalar_one_or_none()
+    ).scalars().first()
 
     if slot is not None:
         return slot
@@ -264,6 +264,12 @@ async def seed_demo_data() -> None:
     }
 
     async with async_session_factory() as session:
+        migration_seed_account = await _get_account_by_username(session, "teacher_1")
+        if migration_seed_account is not None:
+            print("Seed data is managed by Alembic migration 20260503_0010; skipping legacy seed.")
+            await engine.dispose()
+            return
+
         async with session.begin():
             city_names = ["Lviv", "Kyiv", "Odesa"]
             discipline_names = ["Mathematics", "Programming", "English"]

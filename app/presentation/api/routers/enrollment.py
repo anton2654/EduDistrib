@@ -47,12 +47,14 @@ from app.application.services.enrollment_service import (
     DuplicateBookingError,
     EnrollmentService,
     SlotFullError,
+    SlotAlreadyEndedError,
     SlotIsInactiveError,
     SlotNotFoundError,
     StudentTimeConflictError,
     StudentNotFoundError,
     TeacherNotFoundError,
     TeacherSlotAccessError,
+    TeacherSlotTimeConflictError,
 )
 from app.domain.entities.teacher import Teacher
 from app.domain.entities.booking import BookingStatus
@@ -99,6 +101,7 @@ def _available_slot_to_dto(
         starts_at=slot.starts_at,
         ends_at=slot.ends_at,
         description=slot.description,
+        address=slot.address,
         capacity=slot.capacity,
         reserved_seats=slot.reserved_seats,
         available_seats=available_seats,
@@ -131,6 +134,7 @@ def _booking_to_dto(booking: BookingProjection) -> BookingDetailsReadDTO:
         starts_at=booking.starts_at,
         ends_at=booking.ends_at,
         description=booking.description,
+        address=booking.address,
         status=booking.status,
         has_review=booking.has_review,
         created_at=booking.created_at,
@@ -310,6 +314,8 @@ async def create_slot(
         slot = await service.create_slot(slot_in)
     except (TeacherNotFoundError, DisciplineNotFoundError) as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except TeacherSlotTimeConflictError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     return TeacherSlotReadDTO.model_validate(slot)
 
@@ -494,7 +500,13 @@ async def create_booking(
         booking = await service.create_booking(booking_payload)
     except (StudentNotFoundError, SlotNotFoundError) as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-    except (SlotIsInactiveError, SlotFullError, DuplicateBookingError, StudentTimeConflictError) as error:
+    except (
+        SlotIsInactiveError,
+        SlotAlreadyEndedError,
+        SlotFullError,
+        DuplicateBookingError,
+        StudentTimeConflictError,
+    ) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     return BookingReadDTO.model_validate(booking)

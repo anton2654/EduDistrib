@@ -469,10 +469,12 @@ export async function createTeacherSlot({
   startsAt,
   endsAt,
   description,
+  address,
   capacity,
   isActive,
 }) {
   const normalizedDescription = description?.trim();
+  const normalizedAddress = address?.trim();
 
   return request(TEACHER_BASE_URL, "/slots/", {
     method: "POST",
@@ -481,6 +483,7 @@ export async function createTeacherSlot({
       starts_at: startsAt,
       ends_at: endsAt,
       description: normalizedDescription || null,
+      address: normalizedAddress || null,
       capacity: Number(capacity),
       is_active: Boolean(isActive),
     },
@@ -502,6 +505,10 @@ export async function updateTeacherSlot(slotId, payload) {
   if (payload.description !== undefined) {
     const normalizedDescription = payload.description?.trim();
     body.description = normalizedDescription || null;
+  }
+  if (payload.address !== undefined) {
+    const normalizedAddress = payload.address?.trim();
+    body.address = normalizedAddress || null;
   }
   if (payload.capacity !== undefined) {
     body.capacity = Number(payload.capacity);

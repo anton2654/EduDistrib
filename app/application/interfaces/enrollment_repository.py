@@ -32,6 +32,7 @@ class AvailableSlotProjection:
     starts_at: datetime
     ends_at: datetime
     description: str | None
+    address: str | None
     capacity: int
     reserved_seats: int
     average_rating: float | None = None
@@ -54,6 +55,7 @@ class BookingProjection:
     starts_at: datetime
     ends_at: datetime
     description: str | None
+    address: str | None
     status: BookingStatus
     has_review: bool
     created_at: datetime
@@ -78,9 +80,13 @@ class TeacherSlotProjection:
     starts_at: datetime
     ends_at: datetime
     description: str | None
+    address: str | None
+    city_id: int
+    city_name: str
     capacity: int
     reserved_seats: int
     is_active: bool
+    completed_at: datetime | None
     created_at: datetime
 
 
@@ -256,6 +262,10 @@ class EnrollmentRepositoryInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def mark_slot_completed(self, slot: TeacherSlot) -> TeacherSlot:
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete_slot(self, slot: TeacherSlot) -> None:
         raise NotImplementedError
 
@@ -321,6 +331,16 @@ class EnrollmentRepositoryInterface(ABC):
         student_id: int,
         starts_at: datetime,
         ends_at: datetime,
+    ) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def teacher_has_slot_time_conflict(
+        self,
+        teacher_id: int,
+        starts_at: datetime,
+        ends_at: datetime,
+        exclude_slot_id: int | None = None,
     ) -> bool:
         raise NotImplementedError
 

@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import IntegrityError
 
@@ -34,9 +35,12 @@ from app.domain.entities.teacher import Teacher
 from app.domain.entities.teacher_slot import TeacherSlot
 
 
+_NOTIFICATION_TIMEZONE = ZoneInfo("Europe/Kyiv")
+
+
 def _format_notification_datetime(value: datetime) -> str:
     if value.tzinfo is not None:
-        return value.astimezone().strftime("%d.%m.%Y %H:%M")
+        return value.astimezone(_NOTIFICATION_TIMEZONE).strftime("%d.%m.%Y %H:%M")
     return value.strftime("%d.%m.%Y %H:%M")
 
 
@@ -74,6 +78,11 @@ class SlotIsInactiveError(EnrollmentError):
         super().__init__(f"Slot {slot_id} is inactive.")
 
 
+class SlotAlreadyEndedError(EnrollmentError):
+    def __init__(self, slot_id: int) -> None:
+        super().__init__(f"Slot {slot_id} has already ended.")
+
+
 class SlotFullError(EnrollmentError):
     def __init__(self, slot_id: int) -> None:
         super().__init__(f"Slot {slot_id} has no available seats.")
@@ -102,6 +111,11 @@ class BookingSlotMismatchError(EnrollmentError):
 class TeacherSlotAccessError(EnrollmentError):
     def __init__(self, slot_id: int) -> None:
         super().__init__(f"Slot {slot_id} does not belong to the current teacher.")
+
+
+class TeacherSlotTimeConflictError(EnrollmentError):
+    def __init__(self) -> None:
+        super().__init__("Teacher already has an active slot in this time range.")
 
 
 class SlotTimeRangeError(EnrollmentError):
@@ -265,6 +279,14 @@ class EnrollmentService:
         if discipline is None:
             raise DisciplineNotFoundError(slot_in.discipline_id)
 
+        has_time_conflict = await self._repository.teacher_has_slot_time_conflict(
+            teacher_id=slot_in.teacher_id,
+            starts_at=slot_in.starts_at,
+            ends_at=slot_in.ends_at,
+        )
+        if has_time_conflict:
+            raise TeacherSlotTimeConflictError()
+
         return await self._repository.create_slot(slot_in)
 
     async def create_slot_for_teacher(
@@ -286,10 +308,11 @@ class EnrollmentService:
             starts_at=slot_in.starts_at,
             ends_at=slot_in.ends_at,
             description=slot_in.description,
+            address=slot_in.address,
             capacity=slot_in.capacity,
             is_active=slot_in.is_active,
         )
-        return await self._repository.create_slot(create_dto)
+        return await self.create_slot(create_dto)
 
     async def list_teacher_slots(self, teacher_id: int) -> list[TeacherSlotProjection]:
         teacher = await self._repository.get_teacher_by_id(teacher_id)
@@ -321,12 +344,13 @@ class EnrollmentService:
         starts_changed = slot_in.starts_at is not None and slot_in.starts_at != slot.starts_at
         ends_changed = slot_in.ends_at is not None and slot_in.ends_at != slot.ends_at
         description_changed = (
-            slot_in.description is not None and slot_in.description != slot.description
+            "description" in slot_in.model_fields_set and slot_in.description != slot.description
         )
+        address_changed = "address" in slot_in.model_fields_set and slot_in.address != slot.address
         discipline_changed = (
             slot_in.discipline_id is not None and slot_in.discipline_id != slot.discipline_id
         )
-        should_notify_students = starts_changed or ends_changed or description_changed
+        should_notify_students = starts_changed or ends_changed or description_changed or address_changed
 
         if slot_in.capacity is not None and slot_in.capacity < active_bookings:
             raise SlotCapacityBelowReservedError(
@@ -343,6 +367,17 @@ class EnrollmentService:
         new_ends_at = slot_in.ends_at if slot_in.ends_at is not None else slot.ends_at
         if new_ends_at <= new_starts_at:
             raise SlotTimeRangeError
+
+        new_is_active = slot_in.is_active if slot_in.is_active is not None else slot.is_active
+        if new_is_active:
+            has_time_conflict = await self._repository.teacher_has_slot_time_conflict(
+                teacher_id=teacher_id,
+                starts_at=new_starts_at,
+                ends_at=new_ends_at,
+                exclude_slot_id=slot_id,
+            )
+            if has_time_conflict:
+                raise TeacherSlotTimeConflictError()
 
         active_student_user_ids: list[int] = []
         if should_notify_students:
@@ -385,13 +420,10 @@ class EnrollmentService:
             user_ids=active_student_user_ids,
         )
 
-        if not slot.is_active:
+        if slot.completed_at is not None:
             return slot
 
-        return await self._repository.update_slot(
-            slot,
-            TeacherSlotUpdateDTO(is_active=False),
-        )
+        return await self._repository.mark_slot_completed(slot)
 
     async def delete_slot_for_teacher(self, teacher_id: int, slot_id: int) -> None:
         slot = await self._repository.get_slot_by_id(slot_id)
@@ -525,6 +557,15 @@ class EnrollmentService:
 
         if not slot.is_active:
             raise SlotIsInactiveError(slot.id)
+
+        now = datetime.now(timezone.utc)
+        slot_ends_at = slot.ends_at
+        if slot_ends_at.tzinfo is None:
+            slot_ends_at = slot_ends_at.replace(tzinfo=timezone.utc)
+        else:
+            slot_ends_at = slot_ends_at.astimezone(timezone.utc)
+        if slot_ends_at <= now:
+            raise SlotAlreadyEndedError(slot.id)
 
         existing_booking = await self._repository.has_active_booking(booking_in.student_id, booking_in.slot_id)
         if existing_booking:
@@ -707,6 +748,8 @@ class EnrollmentService:
             slot_id,
         )
         completed_count = await self._repository.complete_active_bookings_for_slot(slot_id)
+        if slot.completed_at is None:
+            await self._repository.mark_slot_completed(slot)
 
         await self._notify_students_about_completed_lesson(
             teacher_id=teacher_id,

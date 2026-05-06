@@ -83,6 +83,35 @@ function getReviewStars(rating) {
   return "⭐".repeat(safeRating);
 }
 
+const DISPLAY_STATUS_META = {
+  upcoming: { label: "Заплановано", className: "status-upcoming" },
+  in_progress: { label: "Триває зараз", className: "status-in-progress" },
+  active: { label: "Очікує підтвердження", className: "status-upcoming" },
+  completed: { label: "Завершено", className: "status-completed" },
+  cancelled: { label: "Скасовано", className: "status-cancelled" },
+};
+
+function getDisplayStatus(entity) {
+  return entity?.display_status ?? entity?.status ?? (entity?.is_active ? "upcoming" : "cancelled");
+}
+
+function getDisplayStatusMeta(entity) {
+  const status = getDisplayStatus(entity);
+  return DISPLAY_STATUS_META[status] ?? {
+    label: String(status ?? "Невідомо").toUpperCase(),
+    className: "status-upcoming",
+  };
+}
+
+function StatusBadge({ entity }) {
+  const statusMeta = getDisplayStatusMeta(entity);
+  return (
+    <span className={`status-badge ${statusMeta.className}`}>
+      {statusMeta.label}
+    </span>
+  );
+}
+
 function getEmailValidationMessage(emailValue, { required = true } = {}) {
   const normalizedEmail = `${emailValue ?? ""}`.trim().toLowerCase();
 
@@ -148,6 +177,7 @@ const EMPTY_TEACHER_SLOT = {
   startsAt: "",
   endsAt: "",
   description: "",
+  address: "",
   capacity: "1",
   isActive: true,
 };
@@ -309,22 +339,17 @@ function App() {
 
   const activeTeacherSlots = useMemo(
     () =>
-      teacherSlots.filter((slot) => {
-        const endsAtMs = Date.parse(slot.ends_at);
-        return (
-          slot.is_active && Number.isFinite(endsAtMs) && endsAtMs > Date.now()
-        );
-      }),
+      teacherSlots.filter((slot) =>
+        ["upcoming", "in_progress"].includes(getDisplayStatus(slot)),
+      ),
     [teacherSlots],
   );
 
   const teacherSlotHistory = useMemo(
     () =>
-      teacherSlots.filter((slot) => {
-        const endsAtMs = Date.parse(slot.ends_at);
-        const hasEnded = !Number.isFinite(endsAtMs) || endsAtMs <= Date.now();
-        return !slot.is_active || hasEnded;
-      }),
+      teacherSlots.filter(
+        (slot) => !["upcoming", "in_progress"].includes(getDisplayStatus(slot)),
+      ),
     [teacherSlots],
   );
 
@@ -419,12 +444,16 @@ function App() {
 
   const upcomingBookings = useMemo(
     () =>
-      bookings.filter((booking) => (booking.status ?? "active") === "active"),
+      bookings.filter((booking) =>
+        ["upcoming", "in_progress"].includes(getDisplayStatus(booking)),
+      ),
     [bookings],
   );
   const historyBookings = useMemo(
     () =>
-      bookings.filter((booking) => (booking.status ?? "active") !== "active"),
+      bookings.filter(
+        (booking) => !["upcoming", "in_progress"].includes(getDisplayStatus(booking)),
+      ),
     [bookings],
   );
 
@@ -1285,6 +1314,7 @@ function App() {
     startsAt = null,
     endsAt = null,
     description = null,
+    address = null,
     averageRating = null,
     reviewsCount = 0,
     source = "teacher",
@@ -1301,6 +1331,7 @@ function App() {
       startsAt,
       endsAt,
       description,
+      address,
       averageRating,
       reviewsCount,
       source,
@@ -1493,53 +1524,6 @@ function App() {
     setProfileEmailError(
       getEmailValidationMessage(profileUpdateDraft.email, { required: true }),
     );
-  }
-
-  async function handleTeacherEmailUpdate() {
-    if (!currentAccount || role !== "teacher") {
-      return;
-    }
-
-    const email = profileUpdateDraft.email.trim().toLowerCase();
-    const emailValidationMessage = getEmailValidationMessage(email, {
-      required: true,
-    });
-    setProfileEmailError(emailValidationMessage);
-    if (emailValidationMessage) {
-      setNotice({
-        kind: "error",
-        text: emailValidationMessage,
-      });
-      return;
-    }
-
-    if (email === (currentAccount.email ?? "")) {
-      setNotice({
-        kind: "warning",
-        text: "Email не змінився.",
-      });
-      return;
-    }
-
-    setIsProfileSubmitting(true);
-
-    try {
-      const updatedAccount = await updateCurrentAccount({ email });
-      setCurrentAccount(updatedAccount);
-      setProfileUpdateDraft((previous) => ({
-        ...previous,
-        email: updatedAccount.email ?? "",
-      }));
-      setProfileEmailError("");
-      setNotice({ kind: "success", text: "Email оновлено." });
-    } catch (error) {
-      setNotice({
-        kind: "error",
-        text: `Не вдалося оновити email: ${error.message}`,
-      });
-    } finally {
-      setIsProfileSubmitting(false);
-    }
   }
 
   async function handleProfileUpdate(event) {
@@ -1945,6 +1929,7 @@ function App() {
         startsAt: toIsoFromLocalInput(teacherSlotForm.startsAt),
         endsAt: toIsoFromLocalInput(teacherSlotForm.endsAt),
         description: teacherSlotForm.description,
+        address: teacherSlotForm.address,
         capacity: teacherSlotForm.capacity,
         isActive: teacherSlotForm.isActive,
       });
@@ -1970,6 +1955,7 @@ function App() {
       startsAt: toDateTimeLocalInputValue(slot.starts_at),
       endsAt: toDateTimeLocalInputValue(slot.ends_at),
       description: slot.description ?? "",
+      address: slot.address ?? "",
       capacity: String(slot.capacity),
       isActive: Boolean(slot.is_active),
     });
@@ -1990,6 +1976,7 @@ function App() {
         startsAt: toIsoFromLocalInput(editingSlotForm.startsAt),
         endsAt: toIsoFromLocalInput(editingSlotForm.endsAt),
         description: editingSlotForm.description,
+        address: editingSlotForm.address,
         capacity: editingSlotForm.capacity,
         isActive: editingSlotForm.isActive,
       });
@@ -2180,7 +2167,7 @@ function App() {
       }));
       setNotice({
         kind: "success",
-        text: `Завершено записів: ${result.updated_bookings}.`,
+        text: `Пару завершено. Завершено записів: ${result.updated_bookings}.`,
       });
     } catch (error) {
       setNotice({
@@ -2728,17 +2715,6 @@ function App() {
                   </>
                 ) : null}
 
-                {role === "teacher" ? (
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={handleTeacherEmailUpdate}
-                    disabled={isProfileSubmitting}
-                  >
-                    {isProfileSubmitting ? "Оновлюю..." : "Оновити Email"}
-                  </button>
-                ) : null}
-
                 {canEditProfileCity ? (
                   <label>
                     Місто
@@ -2980,6 +2956,11 @@ function App() {
                   <p className="meta-line">
                     Місто: {teacherDetailsModalContext.cityName || "Не вказано"}
                   </p>
+                  {teacherDetailsModalContext.source === "slot" ? (
+                    <p className="meta-line">
+                      Адреса: {teacherDetailsModalContext.address || "Не вказано"}
+                    </p>
+                  ) : null}
 
                   {teacherDetailsModalContext.source === "slot" ? (
                     <>
@@ -3086,6 +3067,7 @@ function App() {
                       isDescriptionLong && !isDescriptionExpanded
                         ? `${description.slice(0, 160)}...`
                         : description;
+                    const hasSlotEnded = Date.parse(slot.ends_at) <= Date.now();
 
                     return (
                       <article
@@ -3103,12 +3085,18 @@ function App() {
                             )}
                           </span>
                         </div>
-                        <p className="slot-meta">{slot.city_name}</p>
+                        <p className="slot-meta">
+                          {slot.city_name}
+                          {slot.address ? ` | Адреса: ${slot.address}` : ""}
+                        </p>
                         <p className="slot-time">
                           {formatDateTimeRange(slot.starts_at, slot.ends_at)}
                         </p>
                         <p className="slot-capacity">
                           Місця: {slot.available_seats}/{slot.capacity}
+                        </p>
+                        <p className="slot-meta status-line">
+                          Статус: <StatusBadge entity={slot} />
                         </p>
 
                         {description ? (
@@ -3147,6 +3135,7 @@ function App() {
                                 startsAt: slot.starts_at,
                                 endsAt: slot.ends_at,
                                 description: slot.description,
+                                address: slot.address,
                                 averageRating: slot.average_rating,
                                 reviewsCount: slot.reviews_count,
                                 source: "slot",
@@ -3161,6 +3150,7 @@ function App() {
                             onClick={() => void handleBookSlot(slot.slot_id)}
                             disabled={
                               bookingInProgressSlotId === slot.slot_id ||
+                              hasSlotEnded ||
                               slot.available_seats <= 0 ||
                               hasActiveBooking
                             }
@@ -3169,6 +3159,8 @@ function App() {
                               ? "Бронюю..."
                               : hasActiveBooking
                                 ? "Вже записані"
+                                : hasSlotEnded
+                                  ? "Заняття завершилось"
                                 : slot.available_seats <= 0
                                   ? "Немає місць"
                                   : "Записатися"}
@@ -3263,7 +3255,10 @@ function App() {
                             {booking.discipline_name}
                           </p>
                           <h3>{booking.teacher_name}</h3>
-                          <p className="slot-meta">{booking.city_name}</p>
+                          <p className="slot-meta">
+                            {booking.city_name}
+                            {booking.address ? ` | Адреса: ${booking.address}` : ""}
+                          </p>
                           <p className="slot-time">
                             {formatDateTimeRange(
                               booking.starts_at,
@@ -3292,9 +3287,8 @@ function App() {
                           ) : (
                             <p className="slot-meta">Опис не вказано.</p>
                           )}
-                          <p className="slot-meta">
-                            Статус:{" "}
-                            {String(booking.status ?? "active").toUpperCase()}
+                          <p className="slot-meta status-line">
+                            Статус: <StatusBadge entity={booking} />
                           </p>
 
                           {booking.status === "completed" &&
@@ -3473,6 +3467,16 @@ function App() {
                 </select>
               </label>
 
+              <label className="span-all-columns">
+                Адреса проведення (необов'язково)
+                <input
+                  name="address"
+                  value={teacherSlotForm.address}
+                  onChange={handleTeacherSlotFormChange}
+                  placeholder="Наприклад: вул. Бандери, 12"
+                />
+              </label>
+
               <label>
                 Початок
                 <input
@@ -3583,7 +3587,13 @@ function App() {
                               Місць: {slot.available_seats}/{slot.capacity} ·
                               Заброньовано: {slot.reserved_seats}
                             </p>
-                            <p className="slot-meta">Статус: Активний</p>
+                            <p className="slot-meta">
+                              Місто: {slot.city_name || "Не вказано"}
+                              {slot.address ? ` | Адреса: ${slot.address}` : ""}
+                            </p>
+                            <p className="slot-meta status-line">
+                              Статус: <StatusBadge entity={slot} />
+                            </p>
 
                             <div className="inline-actions">
                               <button
@@ -3616,7 +3626,7 @@ function App() {
                                   slotActionInProgressId === slot.slot_id
                                 }
                               >
-                                Завершити пару
+                                Завершити всі ACTIVE
                               </button>
                               <button
                                 type="button"
@@ -3677,17 +3687,13 @@ function App() {
                     <>
                       <div className="teacher-slot-grid">
                         {paginatedTeacherSlotHistory.map((slot, index) => {
+                          const displayStatus = getDisplayStatus(slot);
                           const endsAtMs = Date.parse(slot.ends_at);
-                          const hasEnded =
-                            !Number.isFinite(endsAtMs) ||
-                            endsAtMs <= Date.now();
                           const canActivate =
+                            displayStatus === "cancelled" &&
                             !slot.is_active &&
                             Number.isFinite(endsAtMs) &&
                             endsAtMs > Date.now();
-                          const historyStatusLabel = hasEnded
-                            ? "Завершений"
-                            : "Неактивний";
 
                           return (
                             <article
@@ -3711,7 +3717,11 @@ function App() {
                                 Заброньовано: {slot.reserved_seats}
                               </p>
                               <p className="slot-meta">
-                                Статус: {historyStatusLabel}
+                                Місто: {slot.city_name || "Не вказано"}
+                                {slot.address ? ` | Адреса: ${slot.address}` : ""}
+                              </p>
+                              <p className="slot-meta status-line">
+                                Статус: <StatusBadge entity={slot} />
                               </p>
 
                               <div className="inline-actions">
@@ -3855,6 +3865,16 @@ function App() {
                   </select>
                 </label>
 
+                <label className="span-all-columns">
+                  Адреса проведення (необов'язково)
+                  <input
+                    name="address"
+                    value={editingSlotForm.address}
+                    onChange={handleEditSlotFormChange}
+                    placeholder="Наприклад: вул. Бандери, 12"
+                  />
+                </label>
+
                 <label>
                   Початок
                   <input
@@ -3957,17 +3977,20 @@ function App() {
                       )}
                     </p>
                     <p className="meta-line">
+                      Місто: {expandedTeacherSlot.city_name || "Не вказано"}
+                    </p>
+                    <p className="meta-line">
+                      Адреса: {expandedTeacherSlot.address || "Не вказано"}
+                    </p>
+                    <p className="meta-line">
                       Місць: {expandedTeacherSlot.available_seats}/
                       {expandedTeacherSlot.capacity}
                     </p>
                     <p className="meta-line">
                       Опис: {expandedTeacherSlot.description || "Не вказано"}
                     </p>
-                    <p className="meta-line">
-                      Статус:{" "}
-                      {expandedTeacherSlot.is_active
-                        ? "Активний"
-                        : "Неактивний"}
+                    <p className="meta-line status-line">
+                      Статус: <StatusBadge entity={expandedTeacherSlot} />
                     </p>
                   </div>
                 ) : null}
@@ -4015,7 +4038,9 @@ function App() {
                           <tr key={booking.booking_id}>
                             <td>{booking.student_name}</td>
                             <td>{booking.student_email}</td>
-                            <td>{String(booking.status).toUpperCase()}</td>
+                            <td>
+                              <StatusBadge entity={booking} />
+                            </td>
                             <td>
                               <div className="inline-actions">
                                 <button
